@@ -281,13 +281,35 @@ chrome follows.
   (`NSVisualEffectView`, behind-window for the sidebar, within-window for
   overlays). Glass panels get a hairline border (white at 6–8% opacity) and a
   subtle top-edge inner highlight for depth.
-- Accent: monotone by default — **moonlight silver**, rendered metallic
-  rather than flat: a subtle specular gradient (≈ `#F2F2F4 → #A8A8B0`,
-  vertical) on the focused-pane ring, active tab indicator, and launcher
-  selection, with a brighter hairline where light would catch an edge.
-  The accent is **user-customizable** in settings (silver is the default;
-  any tint swaps in without layout changes — accent is a token, not a
-  hardcode). Semantic colors only for states (download progress, errors).
+- Accent: monotone by default — **moonlight silver**, rendered as *material*,
+  not flat color (see "Reactive metal" below). The accent is
+  **user-customizable** in settings (silver is the default; any tint swaps in
+  without layout changes — accent is a token, not a hardcode). Semantic
+  colors only for states (download progress, errors).
+
+**Reactive metal (the signature)**
+- The silver accent is a shader-rendered material, matching the
+  `ref-anodized-grain` / `ref-holo-*` references: a base specular gradient
+  (≈ `#F2F2F4 → #A8A8B0`) with **fine anodized grain** (procedural noise in
+  the shader — the bead-blasted metal texture, never a tiled image), plus an
+  **iridescent specular band** (thin-film rainbow ramp) that sweeps across
+  the surface **following the pointer**, like tilting a holographic foil
+  sticker.
+- Implementation: a small Metal fragment shader via SwiftUI's shader API
+  (`colorEffect`/`layerEffect`, macOS 14+) for chrome elements, and
+  `CAMetalLayer`/filter equivalents where a surface is AppKit-hosted.
+  Uniforms: pointer position, element frame, accent tint. GPU cost is
+  negligible on Apple silicon; uniforms update only while the pointer moves
+  over or near a reactive element — zero cost at rest.
+- Restraint rules: **at rest the material reads as plain grained silver**;
+  the rainbow exists only in the moving specular band during interaction.
+  Applied to accent moments only — focused-pane ring, active tab highlight,
+  launcher selection, hover states, and the Nyx icon/wordmark — never to
+  large surfaces. "Reduce Motion" (accessibility) freezes the sheen to a
+  static highlight.
+- Dark chrome surfaces additionally get a ~1–2% luminance film grain (same
+  shader family) — kills gradient banding on the charcoal and ties the glass
+  to the metal.
 
 **Shape & layout**
 - Generous continuous corner radii: ~10–12 pt for controls, ~16 pt for
@@ -303,18 +325,15 @@ chrome follows.
   into the sidebar (`fullSizeContentView`, hidden titlebar).
 
 **Type & iconography**
-- Typeface: **Saans** (Displaay Type Foundry, Martin Vácha) for all chrome —
-  a commercial license is an accepted cost. The collection's three families
-  map directly onto the browser: Saans (proportional) for UI text, **Saans
-  Mono/SemiMono for URLs** in the address field and launcher, and the
-  variable font (weight/italic/mono axes) keeps the bundle small. Develop on
-  Displaay's free trial fonts; purchase the app-embedding license before any
-  public release (see displaay.net/help/licenses — app embedding is a
-  separate tier from desktop).
+- Typeface: **SF Pro for now** (with SF Mono for URLs in the address field
+  and launcher). The intended house face is **Saans** (Displaay Type
+  Foundry) — proportional for UI, Saans Mono/SemiMono for URLs — deferred
+  until the app-embedding license is purchased (see
+  displaay.net/help/licenses). Fonts are tokens: the swap is a one-line
+  change when the license lands.
 - Chrome type is small (11–13 pt) and medium-weight, section labels
   uppercase with letter-spacing at ~55% opacity. No display type anywhere in
-  the chrome — quiet is the goal. SF Pro remains the fallback stack behind
-  Saans at every size.
+  the chrome — quiet is the goal.
 - SF Symbols only, hierarchical rendering, inside rounded chips where the
   reference uses icon containers.
 
@@ -323,8 +342,9 @@ chrome follows.
   decorative. Divider dragging and pane focus are instant (no animation in
   the interaction path).
 
-**Open items:** app icon — one mockup round before M8; Saans app-embedding
-license purchase before public release (trial fonts until then).
+**Open items:** app icon (candidate direction: the Nyx mark as a holographic
+foil sticker, per `ref-holo-foil-sticker-*`) — one mockup round before M8;
+Saans app-embedding license purchase, then swap the type tokens from SF Pro.
 
 ## 9. Milestones
 
