@@ -281,9 +281,13 @@ chrome follows.
   (`NSVisualEffectView`, behind-window for the sidebar, within-window for
   overlays). Glass panels get a hairline border (white at 6–8% opacity) and a
   subtle top-edge inner highlight for depth.
-- One accent (desaturated violet, the "Nyx" night tone) used sparingly:
-  focused-pane ring, active tab indicator, launcher selection. Semantic
-  colors only for states (download progress, errors).
+- Accent: monotone by default — **moonlight silver**, rendered metallic
+  rather than flat: a subtle specular gradient (≈ `#F2F2F4 → #A8A8B0`,
+  vertical) on the focused-pane ring, active tab indicator, and launcher
+  selection, with a brighter hairline where light would catch an edge.
+  The accent is **user-customizable** in settings (silver is the default;
+  any tint swaps in without layout changes — accent is a token, not a
+  hardcode). Semantic colors only for states (download progress, errors).
 
 **Shape & layout**
 - Generous continuous corner radii: ~10–12 pt for controls, ~16 pt for
@@ -299,9 +303,18 @@ chrome follows.
   into the sidebar (`fullSizeContentView`, hidden titlebar).
 
 **Type & iconography**
-- SF Pro throughout; chrome type is small (11–13 pt) and medium-weight,
-  section labels uppercase with letter-spacing at ~55% opacity. No display
-  type anywhere in the chrome — quiet is the goal.
+- Typeface: **Saans** (Displaay Type Foundry, Martin Vácha) for all chrome —
+  a commercial license is an accepted cost. The collection's three families
+  map directly onto the browser: Saans (proportional) for UI text, **Saans
+  Mono/SemiMono for URLs** in the address field and launcher, and the
+  variable font (weight/italic/mono axes) keeps the bundle small. Develop on
+  Displaay's free trial fonts; purchase the app-embedding license before any
+  public release (see displaay.net/help/licenses — app embedding is a
+  separate tier from desktop).
+- Chrome type is small (11–13 pt) and medium-weight, section labels
+  uppercase with letter-spacing at ~55% opacity. No display type anywhere in
+  the chrome — quiet is the goal. SF Pro remains the fallback stack behind
+  Saans at every size.
 - SF Symbols only, hierarchical rendering, inside rounded chips where the
   reference uses icon containers.
 
@@ -310,7 +323,8 @@ chrome follows.
   decorative. Divider dragging and pane focus are instant (no animation in
   the interaction path).
 
-**Open item:** app icon + exact accent value — one mockup round before M8.
+**Open items:** app icon — one mockup round before M8; Saans app-embedding
+license purchase before public release (trial fonts until then).
 
 ## 9. Milestones
 
