@@ -4,6 +4,7 @@ import NyxCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowController: NyxWindowController?
+    private var webViewHost: WebViewHostController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)
@@ -14,16 +15,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         )
 
-        let content = NSViewController()
-        let contentView = NSView()
-        contentView.wantsLayer = true
-        contentView.layer?.backgroundColor = DesignTokens.baseSurface.cgColor
-        content.view = contentView
+        let webView = WebViewFactory.shared.makeWebView()
+        let content = WebViewHostController(webView: webView)
 
         let split = NyxSplitViewController(sidebar: sidebar, content: content)
         let controller = NyxWindowController(contentViewController: split)
+        webViewHost = content
         controller.showWindow(nil)
         windowController = controller
+        content.navigate(to: "https://example.com")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
