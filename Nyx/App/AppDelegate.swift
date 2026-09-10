@@ -12,15 +12,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.appearance = NSAppearance(named: .darkAqua)
 
-        let sidebar = NSHostingController(
-            rootView: Text("Nyx")
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        )
-
         let webView = WebViewFactory.shared.makeWebView()
         viewModel.bind(to: webView)
         let content = WebViewHostController(webView: webView)
+
+        let sidebar = NSHostingController(
+            rootView: SidebarView(model: viewModel, commands: content)
+        )
 
         let split = NyxSplitViewController(sidebar: sidebar, content: content)
         let controller = NyxWindowController(contentViewController: split)
