@@ -42,6 +42,10 @@ targets:
       - NyxUITests
     dependencies:
       - target: Nyx
+    info:
+      path: NyxUITests/Info.plist
+      properties:
+        CFBundleDisplayName: NyxUITests
 
 schemes:
   Nyx:
