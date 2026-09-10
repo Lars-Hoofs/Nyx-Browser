@@ -1,21 +1,27 @@
 import AppKit
+import SwiftUI
 import NyxCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var windowController: NSWindowController?
+    private var windowController: NyxWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSLog("NyxCore %@", NyxCore.version)
         NSApp.appearance = NSAppearance(named: .darkAqua)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1280, height: 800),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
+
+        let sidebar = NSHostingController(
+            rootView: Text("Nyx")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         )
-        window.title = "Nyx"
-        window.center()
-        let controller = NSWindowController(window: window)
+
+        let content = NSViewController()
+        let contentView = NSView()
+        contentView.wantsLayer = true
+        contentView.layer?.backgroundColor = DesignTokens.baseSurface.cgColor
+        content.view = contentView
+
+        let split = NyxSplitViewController(sidebar: sidebar, content: content)
+        let controller = NyxWindowController(contentViewController: split)
         controller.showWindow(nil)
         windowController = controller
     }
