@@ -5,6 +5,10 @@ options:
     macOS: "26.0"
   createIntermediateGroups: true
 
+packages:
+  NyxCore:
+    path: NyxCore
+
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -19,6 +23,8 @@ targets:
     platform: macOS
     sources:
       - Nyx
+    dependencies:
+      - package: NyxCore
     entitlements:
       path: Nyx/Nyx.entitlements
       properties:

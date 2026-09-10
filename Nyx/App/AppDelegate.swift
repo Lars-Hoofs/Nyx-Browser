@@ -1,9 +1,11 @@
 import AppKit
+import NyxCore
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowController: NSWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSLog("NyxCore %@", NyxCore.version)
         NSApp.appearance = NSAppearance(named: .darkAqua)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 800),
