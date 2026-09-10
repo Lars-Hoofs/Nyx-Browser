@@ -1,0 +1,56 @@
+name: Nyx
+options:
+  bundleIdPrefix: com.larshoofs
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 1
+    CODE_SIGN_IDENTITY: "-"
+    DEAD_CODE_STRIPPING: YES
+
+targets:
+  Nyx:
+    type: application
+    platform: macOS
+    sources:
+      - Nyx
+    entitlements:
+      path: Nyx/Nyx.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+    info:
+      path: Nyx/Info.plist
+      properties:
+        CFBundleDisplayName: Nyx
+        LSMinimumSystemVersion: "26.0"
+        NSMainNibFile: ""
+        NSPrincipalClass: NSApplication
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        NSHumanReadableCopyright: ""
+
+  NyxUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - NyxUITests
+    dependencies:
+      - target: Nyx
+
+schemes:
+  Nyx:
+    build:
+      targets:
+        Nyx: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - NyxUITests
