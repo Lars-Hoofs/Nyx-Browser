@@ -267,19 +267,50 @@ out of window — App Nap throttles it) → **hibernated** (no webview; snapshot
   (the warm MRU cache of §5.2) beyond visible panes by default.
 - **Site compat**: the manual checklist of §5.9 as a release gate.
 
-## 8. Visual design language
+## 8. Visual design language — "night glass"
 
-Dark-first, quiet, glassy. Reference: the aesthetic of the user's shared
-screenshots (Steel dashboard) — near-black surfaces, generous spacing, one
-accent color, small type, real blur. Concrete rules:
+Derived from the reference set in `docs/design-refs/` (moodboard, not literal
+UI): modern, sleek, dark-first, glassy. These are the rules every piece of
+chrome follows.
 
-- Materials: `NSVisualEffectView` sidebar; content area is edge-to-edge page.
-- One accent color (default: a desaturated violet, "Nyx" night theme);
-  focus rings, active tab, and launcher selection all use it.
-- Traffic lights inset into the sidebar (`fullSizeContentView`, hidden title).
-- Animations: short (≤ 200 ms), spring-free where possible, never decorative.
-- App icon and final palette: **open item** — mood-board/mockup round before
-  M8 polish (reference images from the user welcome).
+**Surfaces & color**
+- Warm charcoal, never pure black: base surface ≈ `#161614`, elevated
+  surfaces +4–6% lightness. The chrome is monochrome; color comes from the
+  page content glowing through glass, not from painted UI.
+- Real materials: sidebar, launcher, and popovers are frosted glass
+  (`NSVisualEffectView`, behind-window for the sidebar, within-window for
+  overlays). Glass panels get a hairline border (white at 6–8% opacity) and a
+  subtle top-edge inner highlight for depth.
+- One accent (desaturated violet, the "Nyx" night tone) used sparingly:
+  focused-pane ring, active tab indicator, launcher selection. Semantic
+  colors only for states (download progress, errors).
+
+**Shape & layout**
+- Generous continuous corner radii: ~10–12 pt for controls, ~16 pt for
+  floating panels. Transient controls (address field, badges, action
+  buttons) are pill-shaped.
+- Floating clusters over full-bleed content: the launcher and page-action
+  controls hover as rounded glass islands; the web page itself is
+  edge-to-edge, uninterrupted.
+- Sidebar anatomy (per the reference): search/launcher field with `⌘K` hint
+  at top, spaces as muted small-caps section labels with tracked-out type,
+  tabs as rows with rounded-square favicon chips, active row = soft rounded
+  highlight, and a bottom card (downloads/settings). Traffic lights inset
+  into the sidebar (`fullSizeContentView`, hidden titlebar).
+
+**Type & iconography**
+- SF Pro throughout; chrome type is small (11–13 pt) and medium-weight,
+  section labels uppercase with letter-spacing at ~55% opacity. No display
+  type anywhere in the chrome — quiet is the goal.
+- SF Symbols only, hierarchical rendering, inside rounded chips where the
+  reference uses icon containers.
+
+**Motion**
+- 150–200 ms ease-out, opacity + small translate; no bounce, nothing
+  decorative. Divider dragging and pane focus are instant (no animation in
+  the interaction path).
+
+**Open item:** app icon + exact accent value — one mockup round before M8.
 
 ## 9. Milestones
 
