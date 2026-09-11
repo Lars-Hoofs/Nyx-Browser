@@ -42,6 +42,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func goForward(_ sender: Any?) { coordinator?.goForward() }
     @objc func selectNextTab(_ sender: Any?) { coordinator?.selectNextTab() }
     @objc func selectPreviousTab(_ sender: Any?) { coordinator?.selectPreviousTab() }
+    @objc func splitWithNextTab(_ sender: Any?) { coordinator?.splitWithNextTab() }
+    @objc func breakUpSplit(_ sender: Any?) { coordinator?.breakUpSplit() }
+    @objc func focusNextPane(_ sender: Any?) { coordinator?.focusNextPane() }
+    @objc func focusPreviousPane(_ sender: Any?) { coordinator?.focusPreviousPane() }
 
     #if DEBUG
     private func testHTMLLaunchArgument() -> String? {
@@ -63,6 +67,9 @@ extension AppDelegate: NSMenuItemValidation {
         case #selector(closeTab(_:)): return coordinator?.canCloseTab ?? false
         case #selector(selectNextTab(_:)), #selector(selectPreviousTab(_:)):
             return (coordinator?.manager.tabs.count ?? 0) > 1
+        case #selector(splitWithNextTab(_:)): return coordinator?.canSplit ?? false
+        case #selector(breakUpSplit(_:)), #selector(focusNextPane(_:)), #selector(focusPreviousPane(_:)):
+            return coordinator?.isInSplit ?? false
         default: return true
         }
     }

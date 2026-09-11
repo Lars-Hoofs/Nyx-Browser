@@ -96,6 +96,34 @@ enum MainMenuBuilder {
         previousTab.keyEquivalentModifierMask = [.command, .shift]
         previousTab.target = delegate
         viewMenu.addItem(previousTab)
+        viewMenu.addItem(.separator())
+        let splitWithNextTab = NSMenuItem(title: "Split with Next Tab",
+                                          action: #selector(AppDelegate.splitWithNextTab(_:)),
+                                          keyEquivalent: "s")
+        splitWithNextTab.keyEquivalentModifierMask = [.command, .option]
+        splitWithNextTab.target = delegate
+        viewMenu.addItem(splitWithNextTab)
+        let breakUpSplit = NSMenuItem(title: "Break Up Split",
+                                      action: #selector(AppDelegate.breakUpSplit(_:)),
+                                      keyEquivalent: "s")
+        breakUpSplit.keyEquivalentModifierMask = [.command, .option, .shift]
+        breakUpSplit.target = delegate
+        viewMenu.addItem(breakUpSplit)
+        // Arrow-key equivalents: the NS*ArrowFunctionKey constants import into
+        // Swift as Int (unnamed C enum), so UnicodeScalar's failable
+        // BinaryInteger initializer converts them directly — no further cast.
+        let focusNextPane = NSMenuItem(title: "Focus Next Pane",
+                                       action: #selector(AppDelegate.focusNextPane(_:)),
+                                       keyEquivalent: String(UnicodeScalar(NSRightArrowFunctionKey)!))
+        focusNextPane.keyEquivalentModifierMask = [.command, .option]
+        focusNextPane.target = delegate
+        viewMenu.addItem(focusNextPane)
+        let focusPreviousPane = NSMenuItem(title: "Focus Previous Pane",
+                                           action: #selector(AppDelegate.focusPreviousPane(_:)),
+                                           keyEquivalent: String(UnicodeScalar(NSLeftArrowFunctionKey)!))
+        focusPreviousPane.keyEquivalentModifierMask = [.command, .option]
+        focusPreviousPane.target = delegate
+        viewMenu.addItem(focusPreviousPane)
         main.addItem(submenu(viewMenu, title: "View"))
 
         // History
