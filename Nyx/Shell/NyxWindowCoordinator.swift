@@ -20,6 +20,9 @@ final class NyxWindowCoordinator {
     /// menu-toggle plumbing acts on both from the coordinator's surface.
     let ruleListManager: RuleListManager
     let siteOverrides: SiteOverrideStore
+    /// `nonmutating set` (see its doc) means this can stay a `let` even
+    /// though Task 6's toggle flips it.
+    let settings = NyxSettings()
     private let canvas = PaneCanvasController()
     private var splitViewController: NyxSplitViewController!
     private var windowController: NyxWindowController!
@@ -68,23 +71,10 @@ final class NyxWindowCoordinator {
         // coordinator.
         let overrides = siteOverrides
         let ruleLists = ruleListManager
+        let settings = settings
         manager.contentRulePolicy = ContentRulePolicy(
             shouldBlock: { host in
-                // Global toggle lands in Task 6 (NyxSettings.adblockEnabled);
-                // until then blocking is globally ON — the spec default.
-                // A nil host (nothing committed yet) has no override row
-                // by definition, and a failed store read falls back to
-                // the spec default too (blocking ON — spec §6's
-                // "failure → unblocked" is about COMPILE failures, not a
-                // transient DB read).
-                guard let host else { return true }
-                do {
-                    return try !overrides.isBlockingDisabled(host: host)
-                } catch {
-                    NSLog("Nyx: site-override read failed for %@ (%@); blocking stays ON",
-                          host, String(describing: error))
-                    return true
-                }
+                Self.shouldBlockContentRules(host: host, settings: settings, overrides: overrides)
             },
             apply: { ruleLists.apply(to: $0) },
             remove: { ruleLists.remove(from: $0) })
@@ -163,6 +153,42 @@ final class NyxWindowCoordinator {
         newID != nil && newID != lastID
     }
 
+    /// The `contentRulePolicy.shouldBlock` decision, extracted to a pure
+    /// static function (Task 6) so it is unit-testable against a real
+    /// `NyxSettings`/`SiteOverrideStore` pair without constructing a full
+    /// coordinator (window + session store). The global toggle gates
+    /// everything else; a nil host (nothing committed yet) has no
+    /// override row by definition; a failed store read falls back to the
+    /// spec default too (blocking ON — spec §6's "failure → unblocked"
+    /// is about COMPILE failures, not a transient DB read).
+    static func shouldBlockContentRules(
+        host: String?, settings: NyxSettings, overrides: SiteOverrideStore
+    ) -> Bool {
+        guard settings.adblockEnabled else { return false }
+        guard let host else { return true }
+        do {
+            return try !overrides.isBlockingDisabled(host: host)
+        } catch {
+            NSLog("Nyx: site-override read failed for %@ (%@); blocking stays ON",
+                  host, String(describing: error))
+            return true
+        }
+    }
+
+    /// The "not overridden off" read, extracted alongside
+    /// `shouldBlockContentRules` for the same testability reason. Used by
+    /// `siteAdblockEnabled` below — deliberately independent of the
+    /// global flag (the site checkmark reflects the OVERRIDE alone).
+    static func isSiteOverrideActive(host: String, overrides: SiteOverrideStore) -> Bool {
+        do {
+            return try !overrides.isBlockingDisabled(host: host)
+        } catch {
+            NSLog("Nyx: site-override read failed for %@ (%@); checkmark defaults ON",
+                  host, String(describing: error))
+            return true
+        }
+    }
+
     /// Keyboard focus follows pane focus (final review): switching panes
     /// inside a visible split (⌥⌘←/→, pane click) must route key events to
     /// the newly focused pane's webview, not leave them with the old one.
@@ -229,6 +255,63 @@ final class NyxWindowCoordinator {
     func reloadPage() { manager.reload() }
     func goBack() { manager.goBack() }
     func goForward() { manager.goForward() }
+
+    // MARK: - Adblock menu (Task 6, spec §5.6)
+
+    /// "Block Ads" checkmark — always enabled, so AppDelegate's
+    /// validateMenuItem never gates it.
+    var adblockEnabled: Bool { settings.adblockEnabled }
+
+    /// Gate for "Block Ads on This Site": enabled only with a selected
+    /// tab whose `currentHost` is non-nil. T5's attach-time host seeding
+    /// (ContentRuleEvaluationTests report, decision 5) makes this true
+    /// slightly earlier than "has committed a navigation" for a
+    /// record-restored tab — accepted: the override key (the host) is
+    /// legitimate the moment it's known, seeded or committed.
+    var canToggleSiteAdblock: Bool { manager.selectedTab?.currentHost != nil }
+
+    /// "Block Ads on This Site" checkmark: true unless the selected
+    /// tab's host is explicitly overridden OFF. Mirrors the
+    /// `contentRulePolicy.shouldBlock` fallback above — a nil host or a
+    /// failed store read both read as "not overridden" (checkmark ON),
+    /// matching the spec's blocking-ON default. Meaningless while
+    /// `canToggleSiteAdblock` is false (menu item disabled).
+    var siteAdblockEnabled: Bool {
+        guard let host = manager.selectedTab?.currentHost else { return true }
+        return Self.isSiteOverrideActive(host: host, overrides: siteOverrides)
+    }
+
+    /// Flips the global toggle, re-evaluates every live tab's content
+    /// rules (force: true — a same-host page must re-apply/re-strip even
+    /// though its host DECISION key didn't change, T5's flagged
+    /// requirement), then reloads only the selected tab so its current
+    /// page reflects the new state without disturbing background tabs.
+    func toggleGlobalAdblock() {
+        settings.adblockEnabled.toggle()
+        manager.reevaluateContentRules(force: true)
+        manager.reload()
+    }
+
+    /// Flips the selected tab's site override, re-evaluates every live
+    /// tab (force: true, same reason as above — a SAME-host toggle is
+    /// exactly the case `evaluateContentRules`'s unchanged-decision guard
+    /// would otherwise skip), then reloads the selected tab. A failed
+    /// store write logs and returns without touching any tab: nothing
+    /// actually changed, so re-evaluating would be a no-op reload at
+    /// best and a misleading one at worst.
+    func toggleSiteAdblock() {
+        guard let host = manager.selectedTab?.currentHost else { return }
+        do {
+            let isDisabled = try siteOverrides.isBlockingDisabled(host: host)
+            try siteOverrides.setBlockingDisabled(!isDisabled, host: host)
+        } catch {
+            NSLog("Nyx: site-override write failed for %@ (%@); toggle ignored",
+                  host, String(describing: error))
+            return
+        }
+        manager.reevaluateContentRules(force: true)
+        manager.reload()
+    }
 
     func focusAddress() {
         // ⌘L with a collapsed sidebar must reveal it first (M1 review).

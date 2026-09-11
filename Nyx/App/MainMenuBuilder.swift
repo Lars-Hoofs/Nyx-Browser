@@ -129,6 +129,23 @@ enum MainMenuBuilder {
         focusPreviousPane.keyEquivalentModifierMask = [.command, .option]
         focusPreviousPane.target = delegate
         viewMenu.addItem(focusPreviousPane)
+        viewMenu.addItem(.separator())
+        // M5 Task 6: menu-only — no keyEquivalent. Every letter otherwise
+        // free in this app is already spoken for by ⌘-modifier
+        // combinations elsewhere in this menu bar (View alone uses k, l,
+        // r, s, ], [ across four modifier masks), and these two toggles
+        // are reached often enough via the menu but rarely enough to
+        // deserve a hotkey to fight over.
+        let blockAds = NSMenuItem(title: "Block Ads",
+                                  action: #selector(AppDelegate.toggleBlockAds(_:)),
+                                  keyEquivalent: "")
+        blockAds.target = delegate
+        viewMenu.addItem(blockAds)
+        let blockAdsOnThisSite = NSMenuItem(title: "Block Ads on This Site",
+                                            action: #selector(AppDelegate.toggleBlockAdsOnThisSite(_:)),
+                                            keyEquivalent: "")
+        blockAdsOnThisSite.target = delegate
+        viewMenu.addItem(blockAdsOnThisSite)
         main.addItem(submenu(viewMenu, title: "View"))
 
         // History

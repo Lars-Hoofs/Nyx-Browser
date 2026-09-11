@@ -50,6 +50,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func focusNextPane(_ sender: Any?) { coordinator?.focusNextPane() }
     @objc func focusPreviousPane(_ sender: Any?) { coordinator?.focusPreviousPane() }
     @objc func openLauncher(_ sender: Any?) { coordinator?.showLauncher() }
+    @objc func toggleBlockAds(_ sender: Any?) { coordinator?.toggleGlobalAdblock() }
+    @objc func toggleBlockAdsOnThisSite(_ sender: Any?) { coordinator?.toggleSiteAdblock() }
 
     #if DEBUG
     private func testHTMLLaunchArgument() -> String? {
@@ -88,6 +90,12 @@ extension AppDelegate: NSMenuItemValidation {
         case #selector(splitWithNextTab(_:)): return coordinator?.canSplit ?? false
         case #selector(breakUpSplit(_:)), #selector(focusNextPane(_:)), #selector(focusPreviousPane(_:)):
             return coordinator?.isInSplit ?? false
+        case #selector(toggleBlockAds(_:)):
+            menuItem.state = (coordinator?.adblockEnabled ?? true) ? .on : .off
+            return true
+        case #selector(toggleBlockAdsOnThisSite(_:)):
+            menuItem.state = (coordinator?.siteAdblockEnabled ?? true) ? .on : .off
+            return coordinator?.canToggleSiteAdblock ?? false
         default: return true
         }
     }
