@@ -11,6 +11,23 @@ enum MainMenuBuilder {
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                         keyEquivalent: "")
         appMenu.addItem(.separator())
+        let servicesMenu = NSMenu(title: "Services")
+        let servicesItem = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")
+        servicesItem.submenu = servicesMenu
+        appMenu.addItem(servicesItem)
+        NSApp.servicesMenu = servicesMenu
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide Nyx",
+                        action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        let hideOthers = NSMenuItem(title: "Hide Others",
+                                    action: #selector(NSApplication.hideOtherApplications(_:)),
+                                    keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthers)
+        appMenu.addItem(withTitle: "Show All",
+                        action: #selector(NSApplication.unhideAllApplications(_:)),
+                        keyEquivalent: "")
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit Nyx",
                         action: #selector(NSApplication.terminate(_:)),
                         keyEquivalent: "q")
@@ -23,9 +40,16 @@ enum MainMenuBuilder {
                                 keyEquivalent: "t")
         newTab.target = delegate
         fileMenu.addItem(newTab)
-        fileMenu.addItem(withTitle: "Close Window",
-                         action: #selector(NSWindow.performClose(_:)),
-                         keyEquivalent: "w")
+        let closeTab = NSMenuItem(title: "Close Tab",
+                                  action: #selector(AppDelegate.closeTab(_:)),
+                                  keyEquivalent: "w")
+        closeTab.target = delegate
+        fileMenu.addItem(closeTab)
+        let closeWindow = NSMenuItem(title: "Close Window",
+                                     action: #selector(NSWindow.performClose(_:)),
+                                     keyEquivalent: "w")
+        closeWindow.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(closeWindow)
         main.addItem(submenu(fileMenu, title: "File"))
 
         // Edit (standard responder-chain selectors — required for
@@ -59,6 +83,19 @@ enum MainMenuBuilder {
                                        keyEquivalent: "s")
         toggleSidebar.keyEquivalentModifierMask = [.command, .shift]
         viewMenu.addItem(toggleSidebar)
+        viewMenu.addItem(.separator())
+        let nextTab = NSMenuItem(title: "Show Next Tab",
+                                 action: #selector(AppDelegate.selectNextTab(_:)),
+                                 keyEquivalent: "]")
+        nextTab.keyEquivalentModifierMask = [.command, .shift]
+        nextTab.target = delegate
+        viewMenu.addItem(nextTab)
+        let previousTab = NSMenuItem(title: "Show Previous Tab",
+                                     action: #selector(AppDelegate.selectPreviousTab(_:)),
+                                     keyEquivalent: "[")
+        previousTab.keyEquivalentModifierMask = [.command, .shift]
+        previousTab.target = delegate
+        viewMenu.addItem(previousTab)
         main.addItem(submenu(viewMenu, title: "View"))
 
         // History
@@ -74,6 +111,19 @@ enum MainMenuBuilder {
         forward.target = delegate
         historyMenu.addItem(forward)
         main.addItem(submenu(historyMenu, title: "History"))
+
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Minimize",
+                           action: #selector(NSWindow.performMiniaturize(_:)),
+                           keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Zoom",
+                           action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        windowMenu.addItem(withTitle: "Bring All to Front",
+                           action: #selector(NSApplication.arrangeInFront(_:)),
+                           keyEquivalent: "")
+        main.addItem(submenu(windowMenu, title: "Window"))
+        NSApp.windowsMenu = windowMenu
 
         return main
     }
