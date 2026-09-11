@@ -17,6 +17,7 @@ let package = Package(
                     .product(name: "GRDB", package: "GRDB.swift"),
                     .product(name: "ContentBlockerConverter", package: "SafariConverterLib")
                 ],
+                resources: [.process("Resources")],
                 swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(name: "NyxCoreTests", dependencies: ["NyxCore"],
                     swiftSettings: [.swiftLanguageMode(.v5)])
