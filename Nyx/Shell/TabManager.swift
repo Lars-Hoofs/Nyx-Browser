@@ -24,9 +24,9 @@ final class TabManager: NSObject {
     @ObservationIgnored private var mruLive: [String] = []
     @ObservationIgnored private var memoryPressureSource: DispatchSourceMemoryPressure?
 
-    init(factory: WebViewFactory = .shared,
+    init(factory: WebViewFactory? = nil,
          policy: TabLifecyclePolicy = TabLifecyclePolicy()) {
-        self.factory = factory
+        self.factory = factory ?? .shared
         self.policy = policy
         super.init()
         installMemoryPressureHandler()
@@ -93,8 +93,8 @@ final class TabManager: NSObject {
     func moveTab(fromOffsets: IndexSet, toOffset: Int, in spaceID: String) {
         var inSpace = tabs(in: spaceID)
         inSpace.move(fromOffsets: fromOffsets, toOffset: toOffset)
-        tabs.removeAll { $0.spaceID == spaceID }
-        tabs.append(contentsOf: inSpace)
+        let slots = tabs.indices.filter { tabs[$0].spaceID == spaceID }
+        for (slot, tab) in zip(slots, inSpace) { tabs[slot] = tab }
         onStateChange?()
     }
 
@@ -103,12 +103,15 @@ final class TabManager: NSObject {
                                 orderIndex: (spaces.map(\.orderIndex).max() ?? -1) + 1)
         spaces.append(space)
         selectedSpaceID = space.id
+        selectedTabID = nil
+        onSelectionChange?(nil)
         onStateChange?()
     }
 
     // MARK: - Persistence bridging
 
     func restore(from snapshot: SessionSnapshot) {
+        mruLive = []
         spaces = snapshot.spaces
         tabs = snapshot.tabs.map { record in
             let tab = BrowserTab(record: record)
@@ -161,13 +164,17 @@ final class TabManager: NSObject {
     }
 
     private func enforcePolicy() {
-        let victims = policy.evictionCandidates(mruLiveTabs: mruLive,
-                                                selected: selectedTabID)
+        hibernateVictims(using: policy)
+    }
+
+    private func hibernateVictims(using policy: TabLifecyclePolicy) {
+        let victims = policy.evictionCandidates(mruLiveTabs: mruLive, selected: selectedTabID)
+        guard !victims.isEmpty else { return }
         for id in victims {
             tabs.first { $0.id == id }?.hibernate()
             mruLive.removeAll { $0 == id }
         }
-        if !victims.isEmpty { onStateChange?() }
+        onStateChange?()
     }
 
     @discardableResult
@@ -185,13 +192,7 @@ final class TabManager: NSObject {
             eventMask: [.warning, .critical], queue: .main)
         source.setEventHandler { [weak self] in
             guard let self else { return }
-            let squeezed = TabLifecyclePolicy(warmLimit: 1)
-            let victims = squeezed.evictionCandidates(
-                mruLiveTabs: self.mruLive, selected: self.selectedTabID)
-            for id in victims {
-                self.tabs.first { $0.id == id }?.hibernate()
-                self.mruLive.removeAll { $0 == id }
-            }
+            self.hibernateVictims(using: TabLifecyclePolicy(warmLimit: 1))
         }
         source.resume()
         memoryPressureSource = source
