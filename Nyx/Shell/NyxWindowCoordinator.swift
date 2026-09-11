@@ -14,6 +14,7 @@ import NyxCore
 final class NyxWindowCoordinator {
     let manager: TabManager
     private let persistence: SessionPersistence
+    private let recorder: HistoryRecorder
     private let canvas = PaneCanvasController()
     private var splitViewController: NyxSplitViewController!
     private var windowController: NyxWindowController!
@@ -23,13 +24,16 @@ final class NyxWindowCoordinator {
 
     init() throws {
         let dbURL = DatabaseLocation.url()
-        let store: SessionStore
+        // One NyxDatabase connection backs both SessionStore and
+        // HistoryStore (M4: they used to each open their own). Quarantine/
+        // retry now wraps the NyxDatabase open itself rather than
+        // SessionStore's — same spec §6 guarantee (never launch-fatal),
+        // just moved down one layer so history shares the salvage path.
+        let database: NyxDatabase
         do {
-            store = try SessionStore(databaseURL: dbURL)
+            database = try NyxDatabase(databaseURL: dbURL)
         } catch {
-            // Spec §6: the session DB must never be launch-fatal. Quarantine
-            // the corrupt file and start fresh; the old data stays on disk.
-            NSLog("Nyx session DB failed to open (%@); quarantining and retrying",
+            NSLog("Nyx database failed to open (%@); quarantining and retrying",
                   String(describing: error))
             let quarantine = dbURL.deletingLastPathComponent()
                 .appendingPathComponent("nyx.sqlite.corrupt-\(Int(Date().timeIntervalSince1970))")
@@ -38,14 +42,23 @@ final class NyxWindowCoordinator {
                 let side = URL(fileURLWithPath: dbURL.path + suffix)
                 try? FileManager.default.moveItem(at: side, to: URL(fileURLWithPath: quarantine.path + suffix))
             }
-            store = try SessionStore(databaseURL: dbURL)
+            database = try NyxDatabase(databaseURL: dbURL)
         }
+        let store = SessionStore(database: database)
+        let historyStore = HistoryStore(database: database)
+        recorder = HistoryRecorder(store: historyStore)
         manager = TabManager()
         persistence = SessionPersistence(store: store, manager: manager)
 
         let sidebar = NSHostingController(rootView: SidebarView(manager: manager))
         splitViewController = NyxSplitViewController(sidebar: sidebar, content: canvas)
         windowController = NyxWindowController(contentViewController: splitViewController)
+
+        // Wired before start() ever runs persistence.restoreOrBootstrap(),
+        // so restored tabs get recorded into history too — TabManager
+        // fires onTabCreated exactly once per tab from every creation
+        // site (newTab, popup adoption, restore's rebuild loop).
+        manager.onTabCreated = { [weak self] tab in self?.recorder.wire(tab) }
 
         // Both manager callbacks re-layout SYNCHRONOUSLY (T7 review): the
         // canvas's layoutGeneration guard depends on synchronous re-entry —

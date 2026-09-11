@@ -41,6 +41,11 @@ final class TabManager: NSObject {
     /// `onStateChange`/`onSelectionChange` only. `onSelectionChange`
     /// semantics are unchanged.
     @ObservationIgnored var onVisibleSetChange: (() -> Void)?
+    /// Fires exactly once for every runtime tab, from every creation site
+    /// (newTab, popup adoption, restore's rebuild loop) — never re-fired
+    /// for a tab already in `tabs`. The coordinator uses this to wire each
+    /// tab into HistoryRecorder without special-casing restore.
+    @ObservationIgnored var onTabCreated: ((BrowserTab) -> Void)?
 
     @ObservationIgnored private let factory: WebViewFactory
     @ObservationIgnored private var policy: TabLifecyclePolicy
@@ -109,6 +114,7 @@ final class TabManager: NSObject {
         let tab = BrowserTab(spaceID: spaceID)
         registerCallbacks(on: tab)
         tabs.append(tab)
+        onTabCreated?(tab)
         if select {
             self.select(tab)
             addressFocusToken += 1
@@ -425,6 +431,7 @@ final class TabManager: NSObject {
         tabs = snapshot.tabs.map { record in
             let tab = BrowserTab(record: record)
             registerCallbacks(on: tab)
+            onTabCreated?(tab)
             return tab
         }
         restoreSplitGroups(from: snapshot)
@@ -631,6 +638,7 @@ extension TabManager: WKUIDelegate {
         registerCallbacks(on: tab)
         tab.attach(popup, uiDelegate: self)
         tabs.append(tab)
+        onTabCreated?(tab)
         select(tab)
         onStateChange?()
         return popup

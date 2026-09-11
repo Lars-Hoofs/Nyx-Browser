@@ -54,14 +54,21 @@ final class PaneViewController: NSViewController {
     private func bindBackgroundObservations(to webView: WKWebView) {
         observations = [
             webView.observe(\.themeColor, options: [.initial, .new]) { [weak self] webView, _ in
-                let resolved = Self.resolvedBackground(of: webView)
+                // themeColor/underPageBackgroundColor are MainActor-isolated
+                // in the SDK; the KVO handler itself is not statically
+                // MainActor per its (NSObject, Change) -> Void signature,
+                // but WebKit always fires these notifications on the main
+                // thread — assumeIsolated documents and asserts that fact
+                // to the compiler rather than hopping through a Task (which
+                // would read a possibly-newer snapshot by the time it runs).
+                let resolved = MainActor.assumeIsolated { Self.resolvedBackground(of: webView) }
                 Task { @MainActor [weak webView] in
                     guard let self, let webView, self.currentWebView === webView else { return }
                     self.view.layer?.backgroundColor = resolved.cgColor
                 }
             },
             webView.observe(\.underPageBackgroundColor, options: [.initial, .new]) { [weak self] webView, _ in
-                let resolved = Self.resolvedBackground(of: webView)
+                let resolved = MainActor.assumeIsolated { Self.resolvedBackground(of: webView) }
                 Task { @MainActor [weak webView] in
                     guard let self, let webView, self.currentWebView === webView else { return }
                     self.view.layer?.backgroundColor = resolved.cgColor
@@ -70,7 +77,7 @@ final class PaneViewController: NSViewController {
         ]
     }
 
-    nonisolated private static func resolvedBackground(of webView: WKWebView) -> NSColor {
+    private static func resolvedBackground(of webView: WKWebView) -> NSColor {
         webView.themeColor ?? webView.underPageBackgroundColor ?? DesignTokens.baseSurface
     }
 }
