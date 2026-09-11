@@ -381,7 +381,10 @@ final class NyxUITests: XCTestCase {
         // Drive the real menu end to end: View > Block Ads. Top-level
         // menu-bar entries and their submenu's items are lazily
         // published, so the submenu must actually be opened before
-        // `menuItems["Block Ads"]` resolves to anything.
+        // `menuItems["Block Ads"]` resolves to anything. Menu-bar clicks
+        // need the app frontmost (macOS shows only the active app's menu
+        // bar) — precedent elsewhere in this file for menu-driven actions.
+        app.activate()
         app.menuBarItems["View"].click()
         let blockAds = app.menuItems["Block Ads"]
         XCTAssertTrue(blockAds.waitForExistence(timeout: 5))
