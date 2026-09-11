@@ -111,9 +111,16 @@ final class BrowserTab: Identifiable {
     /// the opener's state mid-page. The popup re-evaluates independently
     /// on its own first didCommit (and any later attach, which gets a
     /// fresh factory webview and therefore a private controller).
-    /// Accepted consequence of the shared controller: until then, and
-    /// symmetrically until the OPENER re-evaluates, an apply/remove for
-    /// either tab's site affects both.
+    /// Accepted consequence of the shared controller: an apply/remove for
+    /// either tab's site affects both, and the bleed lasts until the
+    /// affected side next evaluates AND ACTS — its next cross-host
+    /// commit, a re-attach (fresh factory controller), or a forced
+    /// re-evaluation — never merely its next commit. Adoption therefore
+    /// also invalidates the OPENER's evaluation marker (TabManager calls
+    /// invalidateContentRuleEvaluation): a stale "already applied" marker
+    /// would otherwise skip every future same-decision commit and leave
+    /// the opener unblocked indefinitely after the popup strips the
+    /// shared controller.
     func attach(_ webView: WKWebView, uiDelegate: WKUIDelegate?,
                 inheritingContentRules: Bool = false) {
         self.webView = webView
@@ -124,7 +131,10 @@ final class BrowserTab: Identifiable {
         lastContentRuleEvaluation = nil
         if !inheritingContentRules {
             if currentHost == nil, !urlString.isEmpty {
-                currentHost = URL(string: urlString)?.host?.lowercased()
+                // Same parser the load below uses, so a scheme-less
+                // persisted urlString still yields its host.
+                currentHost = AddressParser.destinationURL(for: urlString)?
+                    .host?.lowercased()
             }
             evaluateContentRules()
         }
@@ -198,6 +208,17 @@ final class BrowserTab: Identifiable {
         contentRulePolicy.remove(controller)
         if decision { contentRulePolicy.apply(controller) }
         lastContentRuleEvaluation = decision
+    }
+
+    /// Popup-adoption support (TabManager's createWebViewWith path): the
+    /// popup shares this tab's user content controller, so this tab's
+    /// marker no longer reflects state it alone controls — future popup
+    /// evaluations can change the controller behind this tab's back.
+    /// Nil-ing the marker makes this tab's next evaluation (cross-host
+    /// commit, re-attach, force) act instead of trusting a stale
+    /// "already applied"/"already removed" answer.
+    func invalidateContentRuleEvaluation() {
+        lastContentRuleEvaluation = nil
     }
 
     /// The single committed-navigation funnel (called by NavigationRelay):

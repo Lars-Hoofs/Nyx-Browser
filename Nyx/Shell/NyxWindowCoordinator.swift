@@ -78,7 +78,13 @@ final class NyxWindowCoordinator {
                 // "failure → unblocked" is about COMPILE failures, not a
                 // transient DB read).
                 guard let host else { return true }
-                return !((try? overrides.isBlockingDisabled(host: host)) ?? false)
+                do {
+                    return try !overrides.isBlockingDisabled(host: host)
+                } catch {
+                    NSLog("Nyx: site-override read failed for %@ (%@); blocking stays ON",
+                          host, String(describing: error))
+                    return true
+                }
             },
             apply: { ruleLists.apply(to: $0) },
             remove: { ruleLists.remove(from: $0) })

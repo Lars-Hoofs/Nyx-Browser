@@ -3,6 +3,14 @@ import WebKit
 @testable import Nyx
 import NyxCore
 
+/// Bare-initialized WKNavigationAction happens to report a nil
+/// targetFrame today, but nothing in the SDK documents that — this stub
+/// pins the nil answer TabManager's popup path requires instead of
+/// trusting an undocumented default.
+private final class StubPopupNavigationAction: WKNavigationAction {
+    override var targetFrame: WKFrameInfo? { nil }
+}
+
 /// M5 Task 5: per-tab content-rule application through the attach funnel.
 /// Everything is exercised at the ContentRulePolicy closure seam — the
 /// same three closures the coordinator injects — with a spy that models
@@ -221,7 +229,7 @@ final class ContentRuleEvaluationTests: XCTestCase {
         let popupWebView = manager.webView(
             openerWebView,
             createWebViewWith: openerWebView.configuration,
-            for: WKNavigationAction(),   // vanilla instance: targetFrame nil → popup path
+            for: StubPopupNavigationAction(),   // pinned nil targetFrame → popup path
             windowFeatures: WKWindowFeatures())
         XCTAssertNotNil(popupWebView)
         XCTAssertTrue(events.isEmpty,
@@ -240,6 +248,37 @@ final class ContentRuleEvaluationTests: XCTestCase {
         XCTAssertEqual(events, [.remove])
         XCTAssertEqual(appliedSetCount(for: opener), 0,
                        "shared controller: the popup's removal affects the opener")
+    }
+
+    func testOpenerReappliesAfterPopupStripsSharedController() {
+        // Review regression: the opener's marker goes stale against the
+        // SHARED controller. Opener blocks on a.example (marker=true) →
+        // popup commits to an overridden host, stripping the shared
+        // controller → opener commits to c.example, ALSO decision true.
+        // Without adoption invalidating the opener's marker, true ==
+        // stale true would skip the evaluation and the opener would stay
+        // unblocked across every future same-decision commit.
+        let manager = makeManager()
+        let opener = manager.newTab()
+        opener.navigationDidCommit(URL(string: "https://a.example/")!)
+        guard let openerWebView = opener.webView else {
+            return XCTFail("opener must be live")
+        }
+        let popupWebView = manager.webView(
+            openerWebView,
+            createWebViewWith: openerWebView.configuration,
+            for: StubPopupNavigationAction(),
+            windowFeatures: WKWindowFeatures())
+        let popupTab = manager.tabs.first { $0.webView === popupWebView }
+        overriddenHosts = ["popup.example"]
+        popupTab?.navigationDidCommit(URL(string: "https://popup.example/")!)
+        XCTAssertEqual(appliedSetCount(for: opener), 0,
+                       "popup's overridden commit strips the shared controller")
+        events = []
+        opener.navigationDidCommit(URL(string: "https://c.example/")!)
+        XCTAssertEqual(events, [.remove, .apply],
+                       "opener's next same-decision commit must re-apply, not skip")
+        XCTAssertEqual(appliedSetCount(for: opener), 1)
     }
 
     // MARK: - Late policy injection

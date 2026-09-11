@@ -684,6 +684,13 @@ extension TabManager: WKUIDelegate {
         guard navigationAction.targetFrame == nil else { return nil }
         let popup = factory.makeWebView(adopting: configuration)
         let sourceTab = tabs.first { $0.webView === webView }
+        // The popup shares the opener's user content controller, so the
+        // opener's "last evaluation" marker no longer describes state the
+        // opener alone controls: after the popup strips/reapplies the
+        // shared controller, a stale marker would make the opener SKIP
+        // every same-decision re-evaluation indefinitely. Invalidate it
+        // so the opener's next cross-host commit acts (review fix).
+        sourceTab?.invalidateContentRuleEvaluation()
         let spaceID = sourceTab?.spaceID ?? selectedSpaceID ?? ensureDefaultSpace()
         let tab = BrowserTab(spaceID: spaceID)
         registerCallbacks(on: tab)
