@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import NyxCore
 
 final class HistoryStoreTests: XCTestCase {
@@ -233,6 +234,123 @@ final class HistoryStoreTests: XCTestCase {
         try historyStore.recordVisit(url: "https://example.com", title: "Example",
                                       at: Date(timeIntervalSince1970: 5000))
         XCTAssertEqual(try historyStore.recent(limit: 10).count, 1)
+    }
+
+    // MARK: - v4 FTS prefix-index rebuild
+
+    func testTwoCharacterPrefixSearchSurvivesFreshOpenAfterV4Migration() throws {
+        try store.recordVisit(url: "https://github.com", title: "GitHub", at: Date())
+        try store.recordVisit(url: "https://example.com", title: "Example", at: Date())
+
+        // Fresh open: a new NyxDatabase/HistoryStore pair over the same
+        // file, simulating an app restart. Every migration (including
+        // v4's drop-and-recreate of `history_fts`) runs again on connect;
+        // already-applied ones no-op, but this exercises that the
+        // rebuilt table opens cleanly and still finds rows across a
+        // restart, including via a short (2-char) prefix.
+        let reopened = try NyxDatabase(databaseURL: dbURL)
+        let reopenedStore = HistoryStore(database: reopened)
+
+        XCTAssertEqual(try reopenedStore.search("gi", limit: 10).map(\.url), ["https://github.com"])
+        XCTAssertEqual(try reopenedStore.recent(limit: 10).count, 2)
+    }
+
+    func testV4MigrationRebuildsFTSPrefixIndexWithoutLosingExistingV3Rows() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nyx-v3-to-v4-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // Build a v1–v3-only database by hand, mirroring NyxDatabase's own
+        // v1/v2/v3 migrations verbatim (pre-prefix-index `history_fts`),
+        // and seed a history_entry row directly with plain SQL — exactly
+        // what an existing v3 install would have on disk before v4 ships.
+        let legacyQueue = try DatabaseQueue(path: url.path)
+        var legacyMigrator = DatabaseMigrator()
+        legacyMigrator.registerMigration("v1") { db in
+            try db.create(table: "space") { t in
+                t.column("id", .text).primaryKey()
+                t.column("name", .text).notNull()
+                t.column("orderIndex", .integer).notNull()
+            }
+            try db.create(table: "tab") { t in
+                t.column("id", .text).primaryKey()
+                t.column("spaceID", .text).notNull().indexed()
+                    .references("space", onDelete: .cascade)
+                t.column("urlString", .text).notNull()
+                t.column("title", .text).notNull()
+                t.column("orderIndex", .integer).notNull()
+                t.column("interactionState", .blob)
+                t.column("lastActiveAt", .datetime).notNull()
+            }
+            try db.create(table: "meta") { t in
+                t.column("key", .text).primaryKey()
+                t.column("value", .text)
+            }
+        }
+        legacyMigrator.registerMigration("v2") { db in
+            try db.create(table: "split_group") { t in
+                t.column("id", .text).primaryKey()
+                t.column("spaceID", .text).notNull().indexed()
+                    .references("space", onDelete: .cascade)
+                t.column("orderIndex", .integer).notNull()
+                t.column("weightsJSON", .text).notNull()
+            }
+            try db.alter(table: "tab") { t in
+                t.add(column: "splitGroupID", .text)
+                    .references("split_group", onDelete: .setNull)
+            }
+        }
+        legacyMigrator.registerMigration("v3") { db in
+            try db.create(table: "history_entry") { t in
+                t.column("url", .text).primaryKey()
+                t.column("title", .text).notNull()
+                t.column("visitCount", .integer).notNull()
+                t.column("lastVisitedAt", .datetime).notNull().indexed()
+            }
+            try db.create(virtualTable: "history_fts", using: FTS5()) { t in
+                t.synchronize(withTable: "history_entry")
+                t.column("url")
+                t.column("title")
+                t.tokenizer = .unicode61()
+            }
+        }
+        try legacyMigrator.migrate(legacyQueue)
+
+        let seededDate = Date(timeIntervalSince1970: 12_345)
+        try legacyQueue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO history_entry (url, title, visitCount, lastVisitedAt)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                arguments: ["https://github.com", "GitHub", 3, seededDate])
+        }
+        // Sanity: the row landed in the pre-v4 FTS mirror too, before the
+        // real migration under test ever runs.
+        let preMigrationFTSCount = try legacyQueue.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM history_fts")
+        }
+        XCTAssertEqual(preMigrationFTSCount, 1)
+
+        // Migrate-simulate: opening through the real NyxDatabase finds v1–v3
+        // already recorded as applied, so its migrator runs v4 (and only
+        // v4) against this pre-existing data — the exact upgrade path a
+        // real install takes.
+        let database = try NyxDatabase(databaseURL: url)
+
+        try database.dbQueue.read { db in
+            let sql = try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE name = 'history_fts'")
+            XCTAssertTrue(sql?.contains("prefix") ?? false,
+                          "history_fts should be recreated with a prefix index (prefix='2 3')")
+        }
+
+        let store = HistoryStore(database: database)
+        XCTAssertEqual(try store.recent(limit: 10).map(\.url), ["https://github.com"])
+
+        // A short prefix query — now index-served by prefix='2 3' — must
+        // still find the row the FTS rebuild carried over from v3.
+        XCTAssertEqual(try store.search("gi", limit: 10).map(\.url), ["https://github.com"])
+        XCTAssertEqual(try store.search("git", limit: 10).map(\.url), ["https://github.com"])
     }
 
     func testSessionStoreDatabaseInitSharesUnderlyingDatabase() throws {
