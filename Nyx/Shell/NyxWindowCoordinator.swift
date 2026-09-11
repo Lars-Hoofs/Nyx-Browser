@@ -17,6 +17,9 @@ final class NyxWindowCoordinator {
     private let canvas = PaneCanvasController()
     private var splitViewController: NyxSplitViewController!
     private var windowController: NyxWindowController!
+    /// Last selection id seen by onSelectionChange — distinguishes real
+    /// selection transitions from same-tab re-fires (see closure comment).
+    private var lastFocusedTabID: String?
 
     init() throws {
         let dbURL = DatabaseLocation.url()
@@ -52,15 +55,32 @@ final class NyxWindowCoordinator {
             self.relayoutCanvas()
             let title = tab?.title ?? ""
             self.windowController.window?.title = title.isEmpty ? "Nyx" : title
+            // onSelectionChange also RE-fires for the selected tab's own
+            // url/title mutations (TabManager.registerCallbacks keeps the
+            // window title fresh through it) — moving the first responder
+            // on those steals focus from the address field mid-typing
+            // whenever the page ticks its title. So the responder hop runs
+            // only on a real selection TRANSITION (id change), and still
             // AFTER relayoutCanvas: the webview must already sit in the
             // window's view hierarchy for makeFirstResponder to stick.
-            self.moveFirstResponderToFocusedPane(tab)
+            if Self.shouldMoveResponder(to: tab?.id, from: self.lastFocusedTabID) {
+                self.moveFirstResponderToFocusedPane(tab)
+            }
+            self.lastFocusedTabID = tab?.id
         }
         manager.onVisibleSetChange = { [weak self] in self?.relayoutCanvas() }
         canvas.onPaneClicked = { [weak self] in self?.manager.select(tabID: $0) }
         canvas.onWeightsCommitted = { [weak self] in
             self?.manager.updateWeights(groupID: $0, weights: $1)
         }
+    }
+
+    /// Pure transition guard for the responder hop, extracted so the
+    /// regression above stays unit-tested without any window machinery:
+    /// move only when the selection actually changed to a tab — never on
+    /// same-tab re-fires, never on deselection.
+    static func shouldMoveResponder(to newID: String?, from lastID: String?) -> Bool {
+        newID != nil && newID != lastID
     }
 
     /// Keyboard focus follows pane focus (final review): switching panes
