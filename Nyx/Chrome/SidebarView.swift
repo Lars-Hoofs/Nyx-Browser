@@ -196,6 +196,14 @@ private struct TabRow: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
+                // Decorative — without this, SwiftUI/AppKit's List
+                // bridging surfaces the container-level accessibility
+                // identifier ("nyx.tabRow") on EVERY un-combined leaf in
+                // the row (this icon AND the title text), so UI tests
+                // querying by identifier see two matches per tab instead
+                // of one. Hiding the icon leaves the title as the sole
+                // identified element per row.
+                .accessibilityHidden(true)
             Text(displayTitle)
                 .font(.system(size: 12))
                 .lineLimit(1)

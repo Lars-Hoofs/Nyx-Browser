@@ -4,16 +4,19 @@ final class NyxUITests: XCTestCase {
     private let fixtureHTML =
         "<html><head><title>Nyx Fixture</title></head><body>ok</body></html>"
 
-    private func freshDatabasePath() -> String {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("nyx-uitest-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("session.sqlite").path
+    /// Names of every in-container UITest database used by this test
+    /// instance, so `tearDownWithError` can best-effort clean them up.
+    private var usedDatabaseNames: [String] = []
+
+    private func freshDatabaseName() -> String {
+        let name = "uitest-\(UUID().uuidString)"
+        usedDatabaseNames.append(name)
+        return name
     }
 
-    private func launch(dbPath: String, withFixture: Bool = true) -> XCUIApplication {
+    private func launch(dbName: String, withFixture: Bool = true) -> XCUIApplication {
         let app = XCUIApplication()
-        var arguments = ["-nyx-db-path", dbPath]
+        var arguments = ["-nyx-db-name", dbName]
         if withFixture { arguments += ["-nyx-test-html", fixtureHTML] }
         app.launchArguments = arguments
         app.launch()
@@ -21,18 +24,34 @@ final class NyxUITests: XCTestCase {
     }
 
     private func tabRows(in app: XCUIApplication) -> XCUIElementQuery {
-        app.descendants(matching: .any).matching(identifier: "nyx.tabRow")
+        app.outlines.descendants(matching: .any).matching(identifier: "nyx.tabRow")
+    }
+
+    override func tearDownWithError() throws {
+        // Best-effort cleanup: the app writes its UITest databases inside
+        // its own sandbox container, which the (unsandboxed) test runner
+        // can still reach directly.
+        let containerAppSupport = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Containers/com.larshoofs.Nyx/Data/Library/Application Support/Nyx/UITests", isDirectory: true)
+        for name in usedDatabaseNames {
+            for suffix in ["", "-wal", "-shm"] {
+                let url = containerAppSupport.appendingPathComponent("\(name).sqlite\(suffix)")
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        usedDatabaseNames.removeAll()
+        try super.tearDownWithError()
     }
 
     func testLaunchRendersPageAndChrome() {
-        let app = launch(dbPath: freshDatabasePath())
+        let app = launch(dbName: freshDatabaseName())
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
         XCTAssertTrue(app.windows["Nyx Fixture"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.textFields["nyx.addressField"].waitForExistence(timeout: 10))
     }
 
     func testNewTabAppearsInSidebar() {
-        let app = launch(dbPath: freshDatabasePath())
+        let app = launch(dbName: freshDatabaseName())
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
         let rows = tabRows(in: app)
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
@@ -46,8 +65,8 @@ final class NyxUITests: XCTestCase {
     }
 
     func testSessionRestoresAcrossRelaunch() {
-        let dbPath = freshDatabasePath()
-        var app = launch(dbPath: dbPath)
+        let dbName = freshDatabaseName()
+        var app = launch(dbName: dbName)
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
         let rows = tabRows(in: app)
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
@@ -64,7 +83,7 @@ final class NyxUITests: XCTestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(2.5))
         app.terminate()
 
-        app = launch(dbPath: dbPath, withFixture: false)
+        app = launch(dbName: dbName, withFixture: false)
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
         let restoredRows = tabRows(in: app)
         let restoreDeadline = Date().addingTimeInterval(10)
@@ -80,7 +99,7 @@ final class NyxUITests: XCTestCase {
         // number is stable across runs.
         measure(metrics: [XCTApplicationLaunchMetric()]) {
             let app = XCUIApplication()
-            app.launchArguments = ["-nyx-db-path", freshDatabasePath()]
+            app.launchArguments = ["-nyx-db-name", freshDatabaseName()]
             app.launch()
             app.terminate()
         }
