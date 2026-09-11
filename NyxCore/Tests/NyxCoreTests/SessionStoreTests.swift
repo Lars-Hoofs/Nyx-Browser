@@ -83,4 +83,35 @@ final class SessionStoreTests: XCTestCase {
         try store.updateInteractionState(tabID: "t2", data: nil)
         XCTAssertNil(try store.load().tabs.first(where: { $0.id == "t2" })?.interactionState)
     }
+
+    func testSaveThrowsWhenTabReferencesRemovedSpace() throws {
+        let store = try SessionStore(databaseURL: dbURL)
+        var snapshot = makeSnapshot()
+        let space2 = SpaceRecord(id: "s2", name: "Work", orderIndex: 1)
+        let tabC = TabRecord(id: "t3", spaceID: "s2", urlString: "https://work.example.com",
+                             title: "Work", orderIndex: 0,
+                             interactionState: nil,
+                             lastActiveAt: Date(timeIntervalSince1970: 3000))
+        snapshot.spaces.append(space2)
+        snapshot.tabs.append(tabC)
+        try store.save(snapshot)
+
+        // Drop s2 from spaces but leave t3 (spaceID: "s2") in tabs: t3 becomes
+        // an orphan reference on re-save, which must fail if (and only if)
+        // foreign-key enforcement is active on this connection.
+        snapshot.spaces.removeLast()
+        XCTAssertThrowsError(try store.save(snapshot))
+    }
+
+    func testSaveClearsSelectionWhenSetToNil() throws {
+        let store = try SessionStore(databaseURL: dbURL)
+        var snapshot = makeSnapshot()
+        try store.save(snapshot)
+        snapshot.selectedSpaceID = nil
+        snapshot.selectedTabID = nil
+        try store.save(snapshot)
+        let loaded = try store.load()
+        XCTAssertNil(loaded.selectedSpaceID)
+        XCTAssertNil(loaded.selectedTabID)
+    }
 }
