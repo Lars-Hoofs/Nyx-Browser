@@ -46,6 +46,12 @@ final class RuleListManager {
     private let store: WKContentRuleListStore
     private let sources: [FilterListSource]
     private var bootstrapTask: Task<Void, Never>?
+    /// Guards against a second `bootstrap()` call overlapping an in-flight
+    /// one (which would otherwise double-fire `isReady`/`onReady` and issue
+    /// duplicate concurrent compiles). This is a fence against misuse, not
+    /// a queueing mechanism: the one real call site (`NyxWindowCoordinator`)
+    /// calls `bootstrap()` exactly once per manager.
+    private var isBootstrapping = false
 
     private(set) var compiledLists: [WKContentRuleList] = []
     private(set) var isReady = false
@@ -78,17 +84,23 @@ final class RuleListManager {
     /// a previous source version. Never throws; failures retry once after
     /// 30s and otherwise fail silently with browsing unblocked.
     func bootstrap() {
-        bootstrapTask?.cancel()
+        guard !isBootstrapping else {
+            NSLog("RuleListManager: bootstrap() called while already bootstrapping; ignoring re-entrant call.")
+            return
+        }
+        isBootstrapping = true
         bootstrapTask = Task { [weak self] in
             await self?.runBootstrap(isRetry: false)
         }
     }
 
-    /// Adds every compiled list to `controller`. Idempotent in the sense
-    /// that calling it again after `remove(from:)` restores the same set;
-    /// calling it twice without an intervening `remove` is a WebKit-level
-    /// no-op/duplicate concern, not this method's.
+    /// Adds every compiled list to `controller`. Removes first so repeated
+    /// calls (no intervening `remove(from:)`) never stack duplicate lists —
+    /// remove-then-add is idempotent by construction, matching T5's
+    /// evaluation shape (popup-shared controllers, forced re-application on
+    /// `onReady`).
     func apply(to controller: WKUserContentController) {
+        remove(from: controller)
         for list in compiledLists {
             controller.add(list)
         }
@@ -101,22 +113,38 @@ final class RuleListManager {
     }
 
     private func runBootstrap(isRetry: Bool) async {
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled else {
+            isBootstrapping = false
+            return
+        }
         do {
             let converted = try await Self.convert(sources)
+            // `convert` runs on a detached task, which isn't cancelled by
+            // this task's own cancellation — check explicitly on return so
+            // a cancelled bootstrap can never proceed to compile/flip ready.
+            try Task.checkCancellation()
             let lists = try await compile(converted)
             compiledLists = lists
             isReady = true
+            isBootstrapping = false
             onReady?()
             await pruneStaleIdentifiers(keeping: Set(converted.map(\.identifier)))
+        } catch is CancellationError {
+            isBootstrapping = false
         } catch {
             NSLog(
                 "RuleListManager: bootstrap failed (%@); browsing continues unblocked.",
                 String(describing: error)
             )
-            guard !isRetry, !Task.isCancelled else { return }
+            guard !isRetry, !Task.isCancelled else {
+                isBootstrapping = false
+                return
+            }
             try? await Task.sleep(for: .seconds(30))
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                isBootstrapping = false
+                return
+            }
             await runBootstrap(isRetry: true)
         }
     }
@@ -145,6 +173,15 @@ final class RuleListManager {
         var result: [WKContentRuleList] = []
         result.reserveCapacity(converted.count)
         for entry in converted {
+            // Checked per entry so a cancelled bootstrap never issues (or
+            // finishes issuing) a batch of concurrent-with-nothing compiles
+            // after the caller has stopped caring.
+            try Task.checkCancellation()
+            // `try?` treats ANY lookup failure as a cache miss, not just
+            // "not found" — WKContentRuleListStore's lookup error doesn't
+            // distinguish the two, so a transient lookup error just costs
+            // an extra (idempotent) compile rather than being mistaken for
+            // success.
             if let cached = try? await store.contentRuleList(forIdentifier: entry.identifier) {
                 result.append(cached)
             } else {
@@ -168,7 +205,14 @@ final class RuleListManager {
     private func pruneStaleIdentifiers(keeping current: Set<String>) async {
         let available = Set(await store.availableIdentifiers() ?? [])
         for identifier in available.subtracting(current) {
-            try? await store.removeContentRuleList(forIdentifier: identifier)
+            do {
+                try await store.removeContentRuleList(forIdentifier: identifier)
+            } catch {
+                NSLog(
+                    "RuleListManager: failed to prune stale identifier %@ (%@); harmless (an orphaned cache entry, not a correctness issue).",
+                    identifier, String(describing: error)
+                )
+            }
         }
     }
 }

@@ -159,6 +159,68 @@ final class RuleListManagerTests: XCTestCase {
         XCTAssertTrue(manager.compiledLists.isEmpty)
     }
 
+    // MARK: - Bootstrap reentrancy fence
+
+    /// A second `bootstrap()` call landing while the first is still
+    /// in-flight must be ignored outright (NSLog + return), not queued or
+    /// restarted — otherwise `onReady` could double-fire and the store
+    /// could receive duplicate concurrent compiles for the same
+    /// identifier. Both calls happen back-to-back with no `await` between
+    /// them, so this is deterministic (no race): the guard flag is set
+    /// synchronously by the first call before the second is even evaluated.
+    func testSecondBootstrapCallWhileInFlightIsIgnored() async throws {
+        let store = makeEphemeralStore()
+        let manager = RuleListManager(store: store, sources: [fixtureSource()])
+        var readyFireCount = 0
+        let expectation = expectation(description: "onReady")
+        manager.onReady = {
+            readyFireCount += 1
+            expectation.fulfill()
+        }
+
+        manager.bootstrap()
+        manager.bootstrap() // reentrant call while the first is in-flight
+
+        await fulfillment(of: [expectation], timeout: 15)
+        // Give any errant second run a moment to (not) also fire.
+        try await Task.sleep(for: .milliseconds(200))
+
+        XCTAssertEqual(readyFireCount, 1, "onReady must fire exactly once")
+        XCTAssertEqual(
+            manager.compileInvocationCount, 1,
+            "a single fixture source must compile exactly once even with an overlapping bootstrap() call"
+        )
+    }
+
+    // MARK: - apply(to:) is idempotent (no stacking)
+
+    /// `WKUserContentController` offers no public introspection for "how
+    /// many rule lists are attached", so double-application is proven via
+    /// a spy subclass confirming `apply(to:)` invokes
+    /// `removeAllContentRuleLists()` on every call (including the second),
+    /// which is the documented invariant that makes repeat `apply` calls
+    /// idempotent by construction.
+    func testApplyTwiceInvokesRemoveAllEachTime() async throws {
+        final class SpyUserContentController: WKUserContentController {
+            private(set) var removeAllCallCount = 0
+            override func removeAllContentRuleLists() {
+                removeAllCallCount += 1
+                super.removeAllContentRuleLists()
+            }
+        }
+
+        let store = makeEphemeralStore()
+        let manager = RuleListManager(store: store, sources: [fixtureSource()])
+        await awaitReady(manager)
+
+        let controller = SpyUserContentController()
+        manager.apply(to: controller)
+        XCTAssertEqual(controller.removeAllCallCount, 1)
+
+        manager.apply(to: controller) // no intervening remove(from:)
+        XCTAssertEqual(controller.removeAllCallCount, 2, "apply(to:) must remove-then-add every time, so repeat calls never stack")
+    }
+
     // MARK: - Real bundled lists: measured WebKit compile time
 
     /// Not required for correctness, but the task explicitly calls for
