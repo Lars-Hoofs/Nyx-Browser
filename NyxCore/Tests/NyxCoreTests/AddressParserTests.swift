@@ -48,4 +48,14 @@ final class AddressParserTests: XCTestCase {
     func testAboutSchemePassesThrough() {
         XCTAssertEqual(url("about:blank"), "about:blank")
     }
+
+    func testSearchURLAlwaysSearchesEvenForDomainLikeInput() {
+        // The launcher's trailing "search the web" row must search for
+        // exactly what the user typed — even input that destinationURL
+        // would treat as a navigable bare domain.
+        XCTAssertEqual(AddressParser.searchURL(for: "example.com")?.absoluteString,
+                       "https://duckduckgo.com/?q=example.com")
+        XCTAssertEqual(AddressParser.searchURL(for: "swift concurrency")?.absoluteString,
+                       "https://duckduckgo.com/?q=swift%20concurrency")
+    }
 }

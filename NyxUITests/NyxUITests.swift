@@ -14,10 +14,11 @@ final class NyxUITests: XCTestCase {
         return name
     }
 
-    private func launch(dbName: String, withFixture: Bool = true) -> XCUIApplication {
+    private func launch(dbName: String, withFixture: Bool = true, extraArguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         var arguments = ["-nyx-db-name", dbName]
         if withFixture { arguments += ["-nyx-test-html", fixtureHTML] }
+        arguments += extraArguments
         app.launchArguments = arguments
         app.launch()
         return app
@@ -161,6 +162,130 @@ final class NyxUITests: XCTestCase {
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
         }
         XCTAssertEqual(restored.count, 2)
+    }
+
+    // MARK: - Launcher (M4 Task 7)
+
+    func testLauncherOpensAndFilters() {
+        let app = launch(
+            dbName: freshDatabaseName(),
+            extraArguments: ["-nyx-seed-history", "https://example.org/docs|Nyx Example Docs"]
+        )
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+
+        app.typeKey("k", modifierFlags: .command)
+        let field = app.textFields["nyx.launcherField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+
+        // No explicit click before typing: on macOS, XCUIElement.typeText
+        // delivers keystrokes to whatever currently holds keyboard focus,
+        // not to `field` directly — so the typed text landing in the
+        // field's value IS the proof it had keyboard focus the moment
+        // ⌘K opened it.
+        field.typeText("docs")
+        XCTAssertEqual(field.value as? String, "docs")
+
+        // Each row surfaces as a StaticText whose accessibility VALUE is
+        // the row's title text (not `label`) — confirmed via the element
+        // tree during development.
+        let seededRow = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier == %@ AND value CONTAINS %@",
+                        "nyx.launcherRow", "Nyx Example Docs")
+        ).firstMatch
+        XCTAssertTrue(seededRow.waitForExistence(timeout: 5))
+    }
+
+    func testLauncherSwitchesTabs() {
+        let app = launch(dbName: freshDatabaseName())
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.windows["Nyx Fixture"].waitForExistence(timeout: 15))
+
+        let rows = tabRows(in: app)
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
+        let initialCount = rows.count
+        app.typeKey("t", modifierFlags: .command)
+        let tabDeadline = Date().addingTimeInterval(10)
+        while rows.count < initialCount + 1 && Date() < tabDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertEqual(
+            rows.count, initialCount + 1,
+            "expected \(initialCount + 1) tab row(s) after \u{2318}T, but \(rows.count) were delivered"
+        )
+
+        app.activate()
+        app.typeKey("k", modifierFlags: .command)
+        let field = app.textFields["nyx.launcherField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        field.typeText("fixture")
+        app.typeKey(.enter, modifierFlags: [])
+
+        XCTAssertTrue(app.windows["Nyx Fixture"].waitForExistence(timeout: 10))
+    }
+
+    /// T4-review mandate: ⌘K opens (field exists + has keyboard focus), Esc
+    /// dismisses (field gone), ⌘K reopens and the field accepts typing
+    /// again — covers the re-show-focus unknown flagged by the T5 review.
+    ///
+    /// Keyboard focus is proven behaviorally rather than via
+    /// `XCUIElement.hasFocus` (not exposed through macOS's `XCTest` module
+    /// on this SDK): typing with no preceding click and seeing the text
+    /// land in the field's value is only possible if the field already
+    /// held keyboard focus the moment it appeared.
+    ///
+    /// No `XCUIElement` reference is ever reused across an Esc/⌘K boundary:
+    /// each phase re-queries `app.textFields["nyx.launcherField"]` fresh.
+    /// Holding a resolved reference across the resign-key dismiss (the
+    /// panel's by-design close-on-resign-key behavior) hits XCUITest's
+    /// interruption handling and invalidates it — "Targeted element ...
+    /// is no longer valid after interruption handling", observed when this
+    /// test first held `field` across the reopen. Typing after the reopen
+    /// goes through `app.typeText`, which delivers to the key window's
+    /// current first responder directly with no element re-resolution at
+    /// all.
+    func testLauncherLifecycle() {
+        let app = launch(dbName: freshDatabaseName())
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+
+        app.typeKey("k", modifierFlags: .command)
+        XCTAssertTrue(app.textFields["nyx.launcherField"].waitForExistence(timeout: 10))
+        app.typeText("probe")
+        XCTAssertEqual(app.textFields["nyx.launcherField"].value as? String, "probe")
+
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(app.textFields["nyx.launcherField"].waitForNonExistence(timeout: 5))
+
+        app.typeKey("k", modifierFlags: .command)
+        XCTAssertTrue(app.textFields["nyx.launcherField"].waitForExistence(timeout: 10))
+        app.typeText("test")
+        XCTAssertEqual(app.textFields["nyx.launcherField"].value as? String, "test")
+    }
+
+    /// Binding review mandate: clicking outside the launcher panel
+    /// resigns its key status, which closes it via `windowDidResignKey`
+    /// (`LauncherPanelController`'s single close funnel — same path Esc
+    /// and app-deactivate both drive). The address field lives in the
+    /// main window, clear of the floating panel's frame, so clicking it
+    /// is a real click-outside rather than a click inside the panel.
+    ///
+    /// Same query-freshness discipline as `testLauncherLifecycle`: the
+    /// resign-key close is an XCUITest interruption boundary, so the
+    /// post-click assertion re-queries `nyx.launcherField` fresh rather
+    /// than reusing any element resolved before the click.
+    func testLauncherDismissesOnClickOutside() {
+        let app = launch(dbName: freshDatabaseName())
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+
+        app.typeKey("k", modifierFlags: .command)
+        XCTAssertTrue(app.textFields["nyx.launcherField"].waitForExistence(timeout: 10))
+
+        // Outside the panel, in the main window.
+        app.textFields["nyx.addressField"].click()
+
+        // Bounded poll on a fresh query — waitForNonExistence resolves
+        // the query itself on each poll, so no stale reference crosses
+        // the resign-key boundary.
+        XCTAssertTrue(app.textFields["nyx.launcherField"].waitForNonExistence(timeout: 5))
     }
 
     func testLaunchPerformanceBaseline() {

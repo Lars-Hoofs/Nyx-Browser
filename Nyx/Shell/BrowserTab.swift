@@ -21,8 +21,24 @@ final class BrowserTab: Identifiable {
     var pendingInteractionState: Data?
     var lastActiveAt: Date
     @ObservationIgnored var onStateChange: (() -> Void)?
+    /// Fired with the committed URL on every WKNavigationDelegate
+    /// didCommit (M4 spec §7: navigation-committed history recording).
+    /// Wired by HistoryRecorder, not persistence.
+    @ObservationIgnored var onNavigationCommitted: ((URL) -> Void)?
+    /// Fired with the URL the new title belongs to and the title itself,
+    /// whenever it changes — a dedicated slot so HistoryRecorder's title
+    /// enrichment never piggybacks persistence's onStateChange. The URL is
+    /// captured synchronously alongside the title read (see
+    /// bindObservations) rather than read back from `urlString` inside the
+    /// callback: `urlString` is updated by its own independently-scheduled
+    /// Task, so a title event racing a same-tab renavigation could
+    /// otherwise deliver a title against whatever URL happens to have
+    /// landed by the time the callback runs — misattributing it to the
+    /// wrong history row.
+    @ObservationIgnored var onTitleChangedForHistory: ((URL, String) -> Void)?
 
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
+    @ObservationIgnored private var navigationRelay: NavigationRelay?
 
     init(record: TabRecord) {
         id = record.id
@@ -49,6 +65,9 @@ final class BrowserTab: Identifiable {
     func attach(_ webView: WKWebView, uiDelegate: WKUIDelegate?) {
         self.webView = webView
         webView.uiDelegate = uiDelegate
+        let relay = NavigationRelay(tab: self)
+        navigationRelay = relay
+        webView.navigationDelegate = relay
         if let state = pendingInteractionState {
             webView.interactionState = state
             pendingInteractionState = nil
@@ -68,6 +87,8 @@ final class BrowserTab: Identifiable {
         pendingInteractionState = state
         observations = []
         webView?.uiDelegate = nil
+        webView?.navigationDelegate = nil
+        navigationRelay = nil
         webView = nil
         isMediaSuspended = false   // a freshly attached webview starts unsuspended
         isLoading = false
@@ -117,11 +138,19 @@ final class BrowserTab: Identifiable {
             },
             webView.observe(\.title, options: [.initial, .new]) { [weak self] webView, _ in
                 let value = webView.title ?? ""
+                // Read alongside the title, synchronously, OUTSIDE the
+                // Task — same discipline as the value read above: the URL
+                // this title belongs to is a property of THIS KVO
+                // notification, not whatever `urlString` reads later.
+                let titleURL = webView.url
                 Task { @MainActor [weak webView] in
                     guard let self, let webView, self.webView === webView else { return }
                     guard self.title != value else { return }
                     self.title = value
                     self.onStateChange?()
+                    if let titleURL {
+                        self.onTitleChangedForHistory?(titleURL, value)
+                    }
                 }
             },
             webView.observe(\.canGoBack, options: [.initial, .new]) { [weak self] webView, _ in
@@ -153,5 +182,26 @@ final class BrowserTab: Identifiable {
                 }
             }
         ]
+    }
+}
+
+/// Forwards WKNavigationDelegate's didCommit into the owning tab's
+/// onNavigationCommitted (M4 spec §7). Created per attach(), torn down in
+/// hibernate() alongside the KVO observations — same stale-delivery
+/// discipline as bindObservations' closures: holds `tab` weakly and
+/// verifies `tab.webView === webView` before forwarding, so a relay whose
+/// tab has since hibernated or re-attached a different webview is a no-op
+/// rather than delivering a stale navigation event.
+@MainActor
+private final class NavigationRelay: NSObject, WKNavigationDelegate {
+    private weak var tab: BrowserTab?
+
+    init(tab: BrowserTab) {
+        self.tab = tab
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        guard let tab, tab.webView === webView, let url = webView.url else { return }
+        tab.onNavigationCommitted?(url)
     }
 }

@@ -67,6 +67,11 @@ enum MainMenuBuilder {
 
         // View
         let viewMenu = NSMenu(title: "View")
+        let openLauncher = NSMenuItem(title: "Open Launcher",
+                                      action: #selector(AppDelegate.openLauncher(_:)),
+                                      keyEquivalent: "k")
+        openLauncher.target = delegate
+        viewMenu.addItem(openLauncher)
         let focusAddress = NSMenuItem(title: "Open Location…",
                                       action: #selector(AppDelegate.focusAddressField(_:)),
                                       keyEquivalent: "l")

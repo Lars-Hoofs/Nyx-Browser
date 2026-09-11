@@ -30,7 +30,15 @@ public enum AddressParser {
         return searchURL(for: trimmed)
     }
 
-    private static func searchURL(for query: String) -> URL? {
+    /// The search-fallback URL for `query`, unconditionally — public (M4
+    /// launcher) because the launcher's trailing "search the web" result
+    /// must SEARCH for exactly what the user typed: re-parsing the term
+    /// through `destinationURL(for:)` would instead navigate whenever it
+    /// happens to look like a bare domain ("example.com"), turning the
+    /// explicit search row into a stealth navigation. One public entry
+    /// point also keeps the search engine choice in a single place
+    /// (LauncherRanker's `searchFallbackHost` already pins the host).
+    public static func searchURL(for query: String) -> URL? {
         var components = URLComponents(string: "https://duckduckgo.com/")!
         components.queryItems = [URLQueryItem(name: "q", value: query)]
         return components.url

@@ -66,6 +66,94 @@ final class TabManagerTests: XCTestCase {
         XCTAssertNotNil(fourth.webView)
     }
 
+    // MARK: - newTab address-focus token (M4 launcher fix round)
+    // Constructing a full NyxWindowCoordinator needs real window
+    // machinery (see WindowCoordinatorFocusTests), so the launcher's two
+    // paths are pinned at the seam the coordinator uses: `.run(.newTab)`
+    // → newTab() (default bump), `.navigate(_, newTab: true)` →
+    // newTab(focusAddress: false) (no bump).
+
+    func testNewTabBumpsAddressFocusTokenByDefault() {
+        let manager = makeManager()
+        let before = manager.addressFocusToken
+        manager.newTab()
+        XCTAssertEqual(manager.addressFocusToken, before + 1,
+                       "a NEW empty tab sends focus to the address field")
+    }
+
+    func testNewTabWithoutFocusAddressLeavesTokenUntouched() {
+        let manager = makeManager()
+        let before = manager.addressFocusToken
+        let tab = manager.newTab(focusAddress: false)
+        XCTAssertEqual(manager.addressFocusToken, before,
+                       "a navigate-to-URL tab must not steal address focus")
+        XCTAssertEqual(manager.selectedTabID, tab.id,
+                       "focusAddress: false still selects the tab")
+    }
+
+    // MARK: - closeOtherTabs (M4 launcher command)
+
+    func testCloseOtherTabsKeepsOnlySelectedTab() {
+        let manager = makeManager()
+        _ = manager.newTab()
+        let keeper = manager.newTab()
+        _ = manager.newTab()
+        manager.select(keeper)
+        manager.closeOtherTabs()
+        XCTAssertEqual(manager.tabs.map(\.id), [keeper.id])
+        XCTAssertEqual(manager.selectedTabID, keeper.id)
+    }
+
+    func testCloseOtherTabsKeepsSelectedTabsWholeGroup() {
+        let manager = makeManager()
+        let anchor = manager.newTab()
+        let partner = manager.newTab()
+        _ = manager.newTab()
+        _ = manager.newTab()
+        manager.select(anchor)
+        manager.split(anchor, with: partner)
+        manager.closeOtherTabs()
+        // Survivors are the visible set: the selected tab's whole group.
+        XCTAssertEqual(Set(manager.tabs.map(\.id)), Set([anchor.id, partner.id]))
+        XCTAssertEqual(manager.splitGroup(containing: anchor.id)?.tabIDs.count, 2)
+        XCTAssertEqual(manager.selectedTabID, anchor.id)
+    }
+
+    func testCloseOtherTabsDissolvesVictimGroups() {
+        let manager = makeManager()
+        let keeper = manager.newTab()
+        let victimA = manager.newTab()
+        let victimB = manager.newTab()
+        manager.select(victimA)
+        manager.split(victimA, with: victimB)   // a group the keeper is NOT in
+        manager.select(keeper)
+        manager.closeOtherTabs()
+        XCTAssertEqual(manager.tabs.map(\.id), [keeper.id])
+        XCTAssertTrue(manager.splitGroups.isEmpty,
+                      "closing a whole victim group must dissolve it")
+    }
+
+    func testCloseOtherTabsLeavesOtherSpacesUntouched() {
+        let manager = makeManager()
+        let a1 = manager.newTab()
+        let a2 = manager.newTab()
+        manager.newSpace(named: "B")
+        _ = manager.newTab()
+        let b2 = manager.newTab()   // selected
+        manager.closeOtherTabs()
+        XCTAssertEqual(Set(manager.tabs.map(\.id)), Set([a1.id, a2.id, b2.id]))
+        XCTAssertEqual(manager.selectedTabID, b2.id)
+    }
+
+    func testCloseOtherTabsWithoutSelectionIsANoOp() {
+        let manager = makeManager()
+        _ = manager.newTab()
+        manager.newSpace(named: "Empty")   // nils the tab selection
+        XCTAssertNil(manager.selectedTabID)
+        manager.closeOtherTabs()
+        XCTAssertEqual(manager.tabs.count, 1)
+    }
+
     func testSnapshotRoundTripThroughRestore() {
         let manager = makeManager()
         _ = manager.newTab()

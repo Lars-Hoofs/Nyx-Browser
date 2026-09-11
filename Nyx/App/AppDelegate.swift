@@ -17,6 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let testHTML = testHTMLLaunchArgument() {
                 coordinator.loadTestHTML(testHTML)
             }
+            if let seed = seedHistoryLaunchArgument() {
+                coordinator.seedHistory(url: seed.url, title: seed.title)
+            }
             #endif
         } catch {
             NSLog("Nyx failed to start: %@", String(describing: error))
@@ -46,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func breakUpSplit(_ sender: Any?) { coordinator?.breakUpSplit() }
     @objc func focusNextPane(_ sender: Any?) { coordinator?.focusNextPane() }
     @objc func focusPreviousPane(_ sender: Any?) { coordinator?.focusPreviousPane() }
+    @objc func openLauncher(_ sender: Any?) { coordinator?.showLauncher() }
 
     #if DEBUG
     private func testHTMLLaunchArgument() -> String? {
@@ -55,6 +59,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let flagIndex = args.firstIndex(of: "-nyx-test-html"),
               args.index(after: flagIndex) < args.count else { return nil }
         return args[args.index(after: flagIndex)]
+    }
+
+    /// Parses `-nyx-seed-history "<url>|<title>"` (ProcessInfo, per house
+    /// rules — see testHTMLLaunchArgument above). One entry is enough for
+    /// UI-test coverage; repeatable if a later test needs more than one.
+    private func seedHistoryLaunchArgument() -> (url: String, title: String)? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let flagIndex = args.firstIndex(of: "-nyx-seed-history"),
+              args.index(after: flagIndex) < args.count else { return nil }
+        let value = args[args.index(after: flagIndex)]
+        guard let separatorIndex = value.firstIndex(of: "|") else { return nil }
+        let url = String(value[value.startIndex..<separatorIndex])
+        let title = String(value[value.index(after: separatorIndex)...])
+        return (url, title)
     }
     #endif
 }

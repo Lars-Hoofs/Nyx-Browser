@@ -41,6 +41,11 @@ final class TabManager: NSObject {
     /// `onStateChange`/`onSelectionChange` only. `onSelectionChange`
     /// semantics are unchanged.
     @ObservationIgnored var onVisibleSetChange: (() -> Void)?
+    /// Fires exactly once for every runtime tab, from every creation site
+    /// (newTab, popup adoption, restore's rebuild loop) — never re-fired
+    /// for a tab already in `tabs`. The coordinator uses this to wire each
+    /// tab into HistoryRecorder without special-casing restore.
+    @ObservationIgnored var onTabCreated: ((BrowserTab) -> Void)?
 
     @ObservationIgnored private let factory: WebViewFactory
     @ObservationIgnored private var policy: TabLifecyclePolicy
@@ -103,15 +108,24 @@ final class TabManager: NSObject {
 
     // MARK: - Creation / closing / selection
 
+    /// `focusAddress` controls the addressFocusToken bump that sends
+    /// keyboard focus to the sidebar's address field. A NEW empty tab
+    /// wants it (⌘T, the launcher's New Tab command: the user's next act
+    /// is typing a destination); a tab created to immediately navigate to
+    /// a known URL (the launcher's ⌘Enter path) must NOT take it — the
+    /// focused-empty-field state would both invite a stray re-navigating
+    /// Return and suppress SidebarView's URL sync (its `!addressFocused`
+    /// guard) when the navigation commits.
     @discardableResult
-    func newTab(select: Bool = true) -> BrowserTab {
+    func newTab(select: Bool = true, focusAddress: Bool = true) -> BrowserTab {
         let spaceID = selectedSpaceID ?? ensureDefaultSpace()
         let tab = BrowserTab(spaceID: spaceID)
         registerCallbacks(on: tab)
         tabs.append(tab)
+        onTabCreated?(tab)
         if select {
             self.select(tab)
-            addressFocusToken += 1
+            if focusAddress { addressFocusToken += 1 }
         }
         onStateChange?()
         return tab
@@ -156,6 +170,23 @@ final class TabManager: NSObject {
             }
         }
         onStateChange?()
+    }
+
+    /// Launcher command (M4): closes every tab in the SELECTED SPACE
+    /// except the visible set — the selected tab's whole split group, or
+    /// just the selected tab when it isn't in one. Group semantics come
+    /// from routing each victim through `close()` (a victim leaves its
+    /// own split group first; a victims' group left under 2 members
+    /// dissolves). Victims never include the selection, so `close()`'s
+    /// reselection branch never runs and the selection is stable
+    /// throughout. Other spaces are untouched.
+    func closeOtherTabs() {
+        guard selectedTabID != nil, let spaceID = selectedSpaceID else { return }
+        let survivors = pinnedTabIDs   // Set(visibleTabIDs) — the visible set
+        // tabs(in:) snapshots before the loop; close() mutates `tabs`.
+        for tab in tabs(in: spaceID) where !survivors.contains(tab.id) {
+            close(tab)
+        }
     }
 
     func select(tabID: String) {
@@ -425,6 +456,7 @@ final class TabManager: NSObject {
         tabs = snapshot.tabs.map { record in
             let tab = BrowserTab(record: record)
             registerCallbacks(on: tab)
+            onTabCreated?(tab)
             return tab
         }
         restoreSplitGroups(from: snapshot)
@@ -631,6 +663,7 @@ extension TabManager: WKUIDelegate {
         registerCallbacks(on: tab)
         tab.attach(popup, uiDelegate: self)
         tabs.append(tab)
+        onTabCreated?(tab)
         select(tab)
         onStateChange?()
         return popup
