@@ -11,8 +11,13 @@ side by side — as a first-class citizen.
 
 ## Status
 
-Milestone M1 (skeleton): window, vibrancy sidebar, one webview,
-address field, navigation, shortcuts, UI smoke test.
+Milestone M2 (tabs & persistence): sidebar tabs and spaces, GRDB session
+store with full restore after quit/crash, tab hibernation (MRU warm
+cache), popup adoption (`target="_blank"` opens a real tab), tab-aware
+menus. M1 delivered the skeleton: window, vibrancy sidebar, WKWebView,
+address field, shortcuts, offline UI smoke test.
+
+Next: M3 — split view (the core feature).
 
 ## Build
 

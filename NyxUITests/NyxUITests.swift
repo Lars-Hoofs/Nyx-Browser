@@ -1,20 +1,107 @@
 import XCTest
 
 final class NyxUITests: XCTestCase {
-    func testLaunchRendersPageAndChrome() {
-        let app = XCUIApplication()
-        app.launchArguments = [
-            "-nyx-test-html",
-            "<html><head><title>Nyx Fixture</title></head><body>ok</body></html>"
-        ]
-        app.launch()
+    private let fixtureHTML =
+        "<html><head><title>Nyx Fixture</title></head><body>ok</body></html>"
 
-        // Window appears and picks up the page title (Task 8 mirroring).
+    /// Names of every in-container UITest database used by this test
+    /// instance, so `tearDownWithError` can best-effort clean them up.
+    private var usedDatabaseNames: [String] = []
+
+    private func freshDatabaseName() -> String {
+        let name = "uitest-\(UUID().uuidString)"
+        usedDatabaseNames.append(name)
+        return name
+    }
+
+    private func launch(dbName: String, withFixture: Bool = true) -> XCUIApplication {
+        let app = XCUIApplication()
+        var arguments = ["-nyx-db-name", dbName]
+        if withFixture { arguments += ["-nyx-test-html", fixtureHTML] }
+        app.launchArguments = arguments
+        app.launch()
+        return app
+    }
+
+    private func tabRows(in app: XCUIApplication) -> XCUIElementQuery {
+        app.outlines.descendants(matching: .any).matching(identifier: "nyx.tabRow")
+    }
+
+    override func tearDownWithError() throws {
+        // Best-effort cleanup: the app writes its UITest databases inside
+        // its own sandbox container, which the (unsandboxed) test runner
+        // can still reach directly.
+        let containerAppSupport = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Containers/com.larshoofs.Nyx/Data/Library/Application Support/Nyx/UITests", isDirectory: true)
+        for name in usedDatabaseNames {
+            for suffix in ["", "-wal", "-shm"] {
+                let url = containerAppSupport.appendingPathComponent("\(name).sqlite\(suffix)")
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        usedDatabaseNames.removeAll()
+        try super.tearDownWithError()
+    }
+
+    func testLaunchRendersPageAndChrome() {
+        let app = launch(dbName: freshDatabaseName())
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
         XCTAssertTrue(app.windows["Nyx Fixture"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.textFields["nyx.addressField"].waitForExistence(timeout: 10))
+    }
 
-        // Chrome is present.
-        let addressField = app.textFields["nyx.addressField"]
-        XCTAssertTrue(addressField.waitForExistence(timeout: 10))
+    func testNewTabAppearsInSidebar() {
+        let app = launch(dbName: freshDatabaseName())
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+        let rows = tabRows(in: app)
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
+        let initialCount = rows.count
+        app.typeKey("t", modifierFlags: .command)
+        let deadline = Date().addingTimeInterval(10)
+        while rows.count < initialCount + 1 && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertEqual(rows.count, initialCount + 1)
+    }
+
+    func testSessionRestoresAcrossRelaunch() {
+        let dbName = freshDatabaseName()
+        var app = launch(dbName: dbName)
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+        let rows = tabRows(in: app)
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
+        app.typeKey("t", modifierFlags: .command)
+        app.typeKey("t", modifierFlags: .command)
+        let deadline = Date().addingTimeInterval(10)
+        while rows.count < 3 && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertEqual(rows.count, 3)
+
+        // Debounce is 2 s; give the save a beat, then quit cleanly
+        // (applicationWillTerminate also flushes synchronously).
+        RunLoop.current.run(until: Date().addingTimeInterval(2.5))
+        app.terminate()
+
+        app = launch(dbName: dbName, withFixture: false)
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+        let restoredRows = tabRows(in: app)
+        let restoreDeadline = Date().addingTimeInterval(10)
+        while restoredRows.count < 3 && Date() < restoreDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertEqual(restoredRows.count, 3)
+    }
+
+    func testLaunchPerformanceBaseline() {
+        // Spec §7: cold launch < 500 ms to first paint. This records the
+        // baseline metric (visible in the xcresult); hard-assert once the
+        // number is stable across runs.
+        measure(metrics: [XCTApplicationLaunchMetric()]) {
+            let app = XCUIApplication()
+            app.launchArguments = ["-nyx-db-name", freshDatabaseName()]
+            app.launch()
+            app.terminate()
+        }
     }
 }

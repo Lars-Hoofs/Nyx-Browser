@@ -44,4 +44,8 @@ final class AddressParserTests: XCTestCase {
     func testFileURLPassesThrough() {
         XCTAssertEqual(url("file:///tmp/x.html"), "file:///tmp/x.html")
     }
+
+    func testAboutSchemePassesThrough() {
+        XCTAssertEqual(url("about:blank"), "about:blank")
+    }
 }

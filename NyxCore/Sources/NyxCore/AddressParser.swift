@@ -30,7 +30,7 @@ public enum AddressParser {
         return searchURL(for: trimmed)
     }
 
-    static func searchURL(for query: String) -> URL? {
+    private static func searchURL(for query: String) -> URL? {
         var components = URLComponents(string: "https://duckduckgo.com/")!
         components.queryItems = [URLQueryItem(name: "q", value: query)]
         return components.url

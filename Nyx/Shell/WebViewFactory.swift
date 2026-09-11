@@ -12,7 +12,12 @@ final class WebViewFactory {
         configuration.websiteDataStore = .default()
         configuration.userContentController = WKUserContentController()
         configuration.applicationNameForUserAgent = NyxUserAgent.applicationName
+        return makeWebView(adopting: configuration)
+    }
 
+    /// Builds a webview from an externally supplied configuration (popup
+    /// adoption hands us WebKit's) and applies Nyx's per-webview settings.
+    func makeWebView(adopting configuration: WKWebViewConfiguration) -> WKWebView {
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsMagnification = true
