@@ -4,8 +4,8 @@ import WebKit
 import NyxCore
 
 /// Composition root (M1 final-review recommendation): owns the window,
-/// the split, the pane, the manager, and persistence. AppDelegate only
-/// bootstraps this and forwards menu actions.
+/// the split, the pane canvas, the manager, and persistence. AppDelegate
+/// only bootstraps this and forwards menu actions.
 ///
 /// Not an NSObject subclass: NSObject's designated `init()` cannot be
 /// overridden by a throwing `init()`, and nothing here needs Obj-C
@@ -14,7 +14,7 @@ import NyxCore
 final class NyxWindowCoordinator {
     let manager: TabManager
     private let persistence: SessionPersistence
-    private let pane = PaneViewController()
+    private let canvas = PaneCanvasController()
     private var splitViewController: NyxSplitViewController!
     private var windowController: NyxWindowController!
 
@@ -41,14 +41,41 @@ final class NyxWindowCoordinator {
         persistence = SessionPersistence(store: store, manager: manager)
 
         let sidebar = NSHostingController(rootView: SidebarView(manager: manager))
-        splitViewController = NyxSplitViewController(sidebar: sidebar, content: pane)
+        splitViewController = NyxSplitViewController(sidebar: sidebar, content: canvas)
         windowController = NyxWindowController(contentViewController: splitViewController)
 
+        // Both manager callbacks re-layout SYNCHRONOUSLY (T7 review): the
+        // canvas's layoutGeneration guard depends on synchronous re-entry —
+        // no Task {} / DispatchQueue.async here, ever.
         manager.onSelectionChange = { [weak self] tab in
-            self?.pane.present(tab?.webView)
+            guard let self else { return }
+            self.relayoutCanvas()
             let title = tab?.title ?? ""
-            self?.windowController.window?.title = title.isEmpty ? "Nyx" : title
+            self.windowController.window?.title = title.isEmpty ? "Nyx" : title
         }
+        manager.onVisibleSetChange = { [weak self] in self?.relayoutCanvas() }
+        canvas.onPaneClicked = { [weak self] in self?.manager.select(tabID: $0) }
+        canvas.onWeightsCommitted = { [weak self] in
+            self?.manager.updateWeights(groupID: $0, weights: $1)
+        }
+    }
+
+    /// Rebuilds the canvas from the manager's visible set. The canvas may
+    /// deliver transient layouts mid-mutation; the manager's final callback
+    /// state is authoritative, so this never dedupes or defers.
+    private func relayoutCanvas() {
+        let visible = manager.visibleTabIDs
+        let entries: [(id: String, webView: WKWebView?)] = visible.compactMap { id in
+            guard let tab = manager.tabs.first(where: { $0.id == id }) else { return nil }
+            return (id: id, webView: tab.webView)
+        }
+        let group = manager.selectedTab.flatMap {
+            manager.splitGroup(containing: $0.id)
+        }
+        canvas.layout(tabs: entries,
+                      weights: group?.weights ?? [1.0],
+                      groupID: group?.id,
+                      focusedTabID: manager.selectedTabID)
     }
 
     func start() {
@@ -84,6 +111,37 @@ final class NyxWindowCoordinator {
     func selectNextTab() { selectAdjacentTab(offset: 1) }
     func selectPreviousTab() { selectAdjacentTab(offset: -1) }
 
+    // MARK: - Split menu plumbing (Task 10 wires the menu items)
+
+    /// Splits the current tab with the first same-space tab not already in
+    /// its group (spec §5.1). TabManager enforces the cap and logs refusals.
+    func splitWithNextTab() {
+        guard let current = manager.selectedTab else { return }
+        let inSpace = manager.tabs(in: current.spaceID)
+        let groupIDs = Set(manager.splitGroup(containing: current.id)?.tabIDs ?? [current.id])
+        guard let next = inSpace.first(where: { !groupIDs.contains($0.id) }) else { return }
+        manager.split(current, with: next)
+    }
+
+    func breakUpSplit() {
+        guard let current = manager.selectedTab else { return }
+        manager.dissolveSplit(containing: current)
+    }
+
+    /// Pane focus = selecting the adjacent tab in the group's pane order.
+    func focusNextPane() { focusAdjacentPane(offset: 1) }
+    func focusPreviousPane() { focusAdjacentPane(offset: -1) }
+
+    var canSplit: Bool {
+        guard let current = manager.selectedTab else { return false }
+        let groupCount = manager.splitGroup(containing: current.id)?.tabIDs.count ?? 1
+        return groupCount < 4 && manager.tabs(in: current.spaceID).count > groupCount
+    }
+
+    var isInSplit: Bool {
+        manager.selectedTab.flatMap { manager.splitGroup(containing: $0.id) } != nil
+    }
+
     var canGoBack: Bool { manager.selectedTab?.canGoBack ?? false }
     var canGoForward: Bool { manager.selectedTab?.canGoForward ?? false }
     var canCloseTab: Bool { manager.selectedTab != nil }
@@ -97,6 +155,14 @@ final class NyxWindowCoordinator {
         else { return }
         let next = (index + offset + inSpace.count) % inSpace.count
         manager.select(inSpace[next])
+    }
+
+    private func focusAdjacentPane(offset: Int) {
+        guard let current = manager.selectedTab,
+              let group = manager.splitGroup(containing: current.id),
+              let index = group.tabIDs.firstIndex(of: current.id) else { return }
+        let next = (index + offset + group.tabIDs.count) % group.tabIDs.count
+        manager.select(tabID: group.tabIDs[next])
     }
 
     #if DEBUG
