@@ -163,8 +163,13 @@ final class PaneCanvasController: NSViewController, NSSplitViewDelegate {
         commitTask?.cancel()
         commitTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            self?.commitWeights(groupID: groupID)
+            guard !Task.isCancelled, let self else { return }
+            // Clear the handle BEFORE committing: the commit can re-enter
+            // layout() via the coordinator, and a lingering handle would
+            // make that (and every later same-group layout) re-flush a
+            // commit that already fired.
+            self.commitTask = nil
+            self.commitWeights(groupID: groupID)
         }
     }
 

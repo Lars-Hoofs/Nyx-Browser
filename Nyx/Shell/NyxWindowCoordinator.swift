@@ -113,13 +113,11 @@ final class NyxWindowCoordinator {
 
     // MARK: - Split menu plumbing (Task 10 wires the menu items)
 
-    /// Splits the current tab with the first same-space tab not already in
-    /// its group (spec §5.1). TabManager enforces the cap and logs refusals.
+    /// Splits the current tab with the first splittable same-space tab
+    /// (spec §5.1). TabManager enforces the cap and logs refusals.
     func splitWithNextTab() {
-        guard let current = manager.selectedTab else { return }
-        let inSpace = manager.tabs(in: current.spaceID)
-        let groupIDs = Set(manager.splitGroup(containing: current.id)?.tabIDs ?? [current.id])
-        guard let next = inSpace.first(where: { !groupIDs.contains($0.id) }) else { return }
+        guard let current = manager.selectedTab,
+              let next = splitCandidate(for: current) else { return }
         manager.split(current, with: next)
     }
 
@@ -135,7 +133,7 @@ final class NyxWindowCoordinator {
     var canSplit: Bool {
         guard let current = manager.selectedTab else { return false }
         let groupCount = manager.splitGroup(containing: current.id)?.tabIDs.count ?? 1
-        return groupCount < 4 && manager.tabs(in: current.spaceID).count > groupCount
+        return groupCount < 4 && splitCandidate(for: current) != nil
     }
 
     var isInSplit: Bool {
@@ -155,6 +153,16 @@ final class NyxWindowCoordinator {
         else { return }
         let next = (index + offset + inSpace.count) % inSpace.count
         manager.select(inSpace[next])
+    }
+
+    /// The tab a split would pull in: first same-space tab that is neither
+    /// the current tab nor in ANY split group — a member of another group
+    /// would make TabManager refuse, so counting it would enable a menu
+    /// item that silently no-ops.
+    private func splitCandidate(for current: BrowserTab) -> BrowserTab? {
+        manager.tabs(in: current.spaceID).first {
+            $0.id != current.id && manager.splitGroup(containing: $0.id) == nil
+        }
     }
 
     private func focusAdjacentPane(offset: Int) {
