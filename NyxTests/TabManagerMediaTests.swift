@@ -6,6 +6,7 @@ import NyxCore
 /// Records every media-suspension call WebKit would receive, so the tests
 /// can assert the spec §5.2 rule: suspend ONLY panes leaving a visible
 /// split, never on plain tab switches.
+@MainActor
 private final class SpyWebView: WKWebView {
     var recordedSuspensions: [Bool] = []
 
@@ -16,7 +17,6 @@ private final class SpyWebView: WKWebView {
     }
 }
 
-@MainActor
 private final class SpyWebViewFactory: WebViewFactory {
     override func makeWebView(adopting configuration: WKWebViewConfiguration) -> WKWebView {
         let webView = SpyWebView(frame: .zero, configuration: configuration)

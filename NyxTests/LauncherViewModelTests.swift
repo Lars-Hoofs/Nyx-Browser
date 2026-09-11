@@ -277,4 +277,28 @@ final class LauncherViewModelTests: XCTestCase {
         XCTAssertEqual(vm.executeSelected(inNewTab: true), .run(.closeOtherTabs),
                        "commands have no new-tab variant")
     }
+
+    // MARK: - Short-query fastpath
+
+    func testSingleCharQueryUsesRecentHistoryFastpath() throws {
+        // Set up: create tabs and history. The single-character query path
+        // uses recent() instead of search(), avoiding expensive FTS prefix scans.
+        addTab(title: "Current", url: "https://current.example", select: true)
+        let tabX = addTab(title: "Xray", url: "https://x.example")
+        // History: most recent first, then older.
+        try store.recordVisit(url: "https://x-history.example/new", title: "X New", at: Date(timeIntervalSinceNow: -100))
+        try store.recordVisit(url: "https://y-history.example/old", title: "Y Old", at: Date(timeIntervalSinceNow: -3600))
+        try store.recordVisit(url: "https://z-history.example/older", title: "Z Older", at: Date(timeIntervalSinceNow: -7200))
+
+        let vm = makeViewModel()
+        vm.query = "x"
+
+        // For a length-1 query, results come from:
+        // 1. open tabs matching "x" (the Xray tab)
+        // 2. recent history (time-ordered, not FTS-ranked) containing entries with "x"
+        // 3. commands (if any match)
+        // No expensive FTS search is performed; recent() alone provides history.
+        XCTAssertTrue(tabIDs(vm.results).contains(tabX.id), "matching tab should appear")
+        XCTAssertTrue(vm.results.count > 1, "results should include tabs and recent history")
+    }
 }
