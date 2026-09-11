@@ -25,6 +25,11 @@ final class WebViewHostController: NSViewController {
         webView.autoresizingMask = [.width, .height]
         container.addSubview(webView)
         view = container
+
+        // Earliest point self is available as a fully-initialized instance
+        // (loadView runs once, right after init) — set here rather than
+        // viewWillAppear so the delegate is live before any navigation.
+        webView.uiDelegate = self
     }
 
     override func viewWillAppear() {
@@ -48,4 +53,19 @@ extension WebViewHostController: BrowserCommands {
     func goForward() { webView.goForward() }
     func reload() { webView.reload() }
     func stopLoading() { webView.stopLoading() }
+}
+
+extension WebViewHostController: WKUIDelegate {
+    /// M1 fallback: open target="_blank"/window.open requests in the same
+    /// webview. Real tab creation (honoring the passed configuration,
+    /// spec §5.3) arrives with tabs in M2.
+    func webView(_ webView: WKWebView,
+                 createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction,
+                 windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if navigationAction.targetFrame == nil {
+            webView.load(navigationAction.request)
+        }
+        return nil
+    }
 }
