@@ -118,7 +118,12 @@ final class TabManager: NSObject {
             registerCallbacks(on: tab)
             return tab
         }
-        selectedSpaceID = snapshot.selectedSpaceID ?? spaces.first?.id
+        if let storedSpaceID = snapshot.selectedSpaceID,
+           spaces.contains(where: { $0.id == storedSpaceID }) {
+            selectedSpaceID = storedSpaceID
+        } else {
+            selectedSpaceID = spaces.first?.id
+        }
         if tabs.isEmpty {
             newTab(select: true)
         } else if let id = snapshot.selectedTabID,
@@ -156,6 +161,7 @@ final class TabManager: NSObject {
     private func activateIfNeeded(_ tab: BrowserTab) {
         guard tab.webView == nil else { return }
         tab.attach(factory.makeWebView(), uiDelegate: self)
+        touchMRU(tab.id)
     }
 
     private func touchMRU(_ id: String) {
@@ -230,7 +236,7 @@ extension TabManager: WKUIDelegate {
                  for navigationAction: WKNavigationAction,
                  windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard navigationAction.targetFrame == nil else { return nil }
-        let popup = WKWebView(frame: .zero, configuration: configuration)
+        let popup = factory.makeWebView(adopting: configuration)
         let sourceTab = tabs.first { $0.webView === webView }
         let spaceID = sourceTab?.spaceID ?? selectedSpaceID ?? ensureDefaultSpace()
         let tab = BrowserTab(spaceID: spaceID)

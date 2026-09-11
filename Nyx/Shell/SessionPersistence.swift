@@ -17,8 +17,13 @@ final class SessionPersistence {
     }
 
     func restoreOrBootstrap() {
-        let snapshot = (try? store.load())
-            ?? SessionSnapshot(spaces: [], tabs: [], selectedSpaceID: nil, selectedTabID: nil)
+        let snapshot: SessionSnapshot
+        do {
+            snapshot = try store.load()
+        } catch {
+            NSLog("Nyx session load failed (starting fresh): %@", String(describing: error))
+            snapshot = SessionSnapshot(spaces: [], tabs: [], selectedSpaceID: nil, selectedTabID: nil)
+        }
         manager.restore(from: snapshot)
         manager.onStateChange = { [weak self] in self?.scheduleSave() }
     }

@@ -19,7 +19,24 @@ final class NyxWindowCoordinator {
     private var windowController: NyxWindowController!
 
     init() throws {
-        let store = try SessionStore(databaseURL: DatabaseLocation.url())
+        let dbURL = DatabaseLocation.url()
+        let store: SessionStore
+        do {
+            store = try SessionStore(databaseURL: dbURL)
+        } catch {
+            // Spec §6: the session DB must never be launch-fatal. Quarantine
+            // the corrupt file and start fresh; the old data stays on disk.
+            NSLog("Nyx session DB failed to open (%@); quarantining and retrying",
+                  String(describing: error))
+            let quarantine = dbURL.deletingLastPathComponent()
+                .appendingPathComponent("nyx.sqlite.corrupt-\(Int(Date().timeIntervalSince1970))")
+            try? FileManager.default.moveItem(at: dbURL, to: quarantine)
+            for suffix in ["-wal", "-shm"] {
+                let side = URL(fileURLWithPath: dbURL.path + suffix)
+                try? FileManager.default.moveItem(at: side, to: URL(fileURLWithPath: quarantine.path + suffix))
+            }
+            store = try SessionStore(databaseURL: dbURL)
+        }
         manager = TabManager()
         persistence = SessionPersistence(store: store, manager: manager)
 
