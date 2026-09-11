@@ -17,7 +17,11 @@ final class PaneViewController: NSViewController {
 
     func present(_ webView: WKWebView?) {
         guard webView !== currentWebView else { return }
-        currentWebView?.removeFromSuperview()
+        // Detach only if the webview is still ours — during canvas
+        // re-layout it may already have moved to another pane.
+        if currentWebView?.superview === view {
+            currentWebView?.removeFromSuperview()
+        }
         currentWebView = webView
         guard let webView else { return }
         webView.translatesAutoresizingMaskIntoConstraints = true
