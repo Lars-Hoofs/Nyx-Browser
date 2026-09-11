@@ -53,6 +53,19 @@ targets:
       properties:
         CFBundleDisplayName: NyxUITests
 
+  NyxTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - NyxTests
+    dependencies:
+      - target: Nyx
+    settings:
+      base:
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Nyx.app/Contents/MacOS/Nyx"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        GENERATE_INFOPLIST_FILE: YES
+
 schemes:
   Nyx:
     build:
@@ -63,4 +76,5 @@ schemes:
     test:
       config: Debug
       targets:
+        - NyxTests
         - NyxUITests
