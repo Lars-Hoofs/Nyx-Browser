@@ -37,6 +37,13 @@ final class TabManager: NSObject {
         return tabs.first { $0.id == selectedTabID }
     }
 
+    /// All tabs that must stay live: the selected tab plus, in M3, its
+    /// whole split group. Until the split API lands (Task 5) this is just
+    /// the selected tab.
+    var pinnedTabIDs: Set<String> {
+        selectedTabID.map { [$0] } ?? []
+    }
+
     func tabs(in spaceID: String) -> [BrowserTab] {
         tabs.filter { $0.spaceID == spaceID }
     }
@@ -174,7 +181,8 @@ final class TabManager: NSObject {
     }
 
     private func hibernateVictims(using policy: TabLifecyclePolicy) {
-        let victims = policy.evictionCandidates(mruLiveTabs: mruLive, selected: selectedTabID)
+        let victims = policy.evictionCandidates(mruLiveTabs: mruLive,
+                                                pinned: pinnedTabIDs)
         guard !victims.isEmpty else { return }
         for id in victims {
             tabs.first { $0.id == id }?.hibernate()

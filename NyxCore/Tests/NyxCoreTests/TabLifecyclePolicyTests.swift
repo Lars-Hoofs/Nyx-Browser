@@ -5,31 +5,46 @@ final class TabLifecyclePolicyTests: XCTestCase {
     func testUnderLimitEvictsNothing() {
         let policy = TabLifecyclePolicy(warmLimit: 6)
         XCTAssertEqual(policy.evictionCandidates(
-            mruLiveTabs: ["a", "b", "c"], selected: "a"), [])
+            mruLiveTabs: ["a", "b", "c"], pinned: ["a"]), [])
     }
 
     func testOverLimitEvictsLeastRecentlyUsed() {
         let policy = TabLifecyclePolicy(warmLimit: 2)
-        // selected "a" is exempt; of the rest, keep the 2 most recent (b, c)
         XCTAssertEqual(policy.evictionCandidates(
-            mruLiveTabs: ["a", "b", "c", "d", "e"], selected: "a"), ["d", "e"])
+            mruLiveTabs: ["a", "b", "c", "d", "e"], pinned: ["a"]), ["d", "e"])
     }
 
-    func testSelectedNeverEvictedEvenAtTail() {
+    func testPinnedNeverEvictedEvenAtTail() {
         let policy = TabLifecyclePolicy(warmLimit: 1)
         XCTAssertEqual(policy.evictionCandidates(
-            mruLiveTabs: ["a", "b", "c", "sel"], selected: "sel"), ["b", "c"])
+            mruLiveTabs: ["a", "b", "c", "sel"], pinned: ["sel"]), ["b", "c"])
     }
 
-    func testZeroLimitEvictsAllButSelected() {
+    func testZeroLimitEvictsAllButPinned() {
         let policy = TabLifecyclePolicy(warmLimit: 0)
         XCTAssertEqual(policy.evictionCandidates(
-            mruLiveTabs: ["a", "b", "sel"], selected: "sel"), ["a", "b"])
+            mruLiveTabs: ["a", "b", "sel"], pinned: ["sel"]), ["a", "b"])
     }
 
-    func testNilSelectedTreatsAllAsEvictable() {
+    func testEmptyPinnedTreatsAllAsEvictable() {
         let policy = TabLifecyclePolicy(warmLimit: 1)
         XCTAssertEqual(policy.evictionCandidates(
-            mruLiveTabs: ["a", "b", "c"], selected: nil), ["b", "c"])
+            mruLiveTabs: ["a", "b", "c"], pinned: []), ["b", "c"])
+    }
+
+    func testWholeSplitGroupIsPinned() {
+        let policy = TabLifecyclePolicy(warmLimit: 1)
+        // Four visible panes + two background tabs; only the tail beyond
+        // the warm limit among NON-pinned tabs is evicted.
+        XCTAssertEqual(policy.evictionCandidates(
+            mruLiveTabs: ["p1", "p2", "bg1", "p3", "p4", "bg2"],
+            pinned: ["p1", "p2", "p3", "p4"]), ["bg2"])
+    }
+
+    func testPinnedLargerThanWarmLimitStillAllKept() {
+        let policy = TabLifecyclePolicy(warmLimit: 2)
+        XCTAssertEqual(policy.evictionCandidates(
+            mruLiveTabs: ["p1", "p2", "p3", "p4"],
+            pinned: ["p1", "p2", "p3", "p4"]), [])
     }
 }
