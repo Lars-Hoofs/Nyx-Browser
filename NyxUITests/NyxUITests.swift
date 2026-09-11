@@ -261,6 +261,33 @@ final class NyxUITests: XCTestCase {
         XCTAssertEqual(app.textFields["nyx.launcherField"].value as? String, "test")
     }
 
+    /// Binding review mandate: clicking outside the launcher panel
+    /// resigns its key status, which closes it via `windowDidResignKey`
+    /// (`LauncherPanelController`'s single close funnel — same path Esc
+    /// and app-deactivate both drive). The address field lives in the
+    /// main window, clear of the floating panel's frame, so clicking it
+    /// is a real click-outside rather than a click inside the panel.
+    ///
+    /// Same query-freshness discipline as `testLauncherLifecycle`: the
+    /// resign-key close is an XCUITest interruption boundary, so the
+    /// post-click assertion re-queries `nyx.launcherField` fresh rather
+    /// than reusing any element resolved before the click.
+    func testLauncherDismissesOnClickOutside() {
+        let app = launch(dbName: freshDatabaseName())
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+
+        app.typeKey("k", modifierFlags: .command)
+        XCTAssertTrue(app.textFields["nyx.launcherField"].waitForExistence(timeout: 10))
+
+        // Outside the panel, in the main window.
+        app.textFields["nyx.addressField"].click()
+
+        // Bounded poll on a fresh query — waitForNonExistence resolves
+        // the query itself on each poll, so no stale reference crosses
+        // the resign-key boundary.
+        XCTAssertTrue(app.textFields["nyx.launcherField"].waitForNonExistence(timeout: 5))
+    }
+
     func testLaunchPerformanceBaseline() {
         // Spec §7: cold launch < 500 ms to first paint. This records the
         // baseline metric (visible in the xcresult); hard-assert once the

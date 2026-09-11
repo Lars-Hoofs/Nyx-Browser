@@ -101,12 +101,20 @@ final class LauncherPanelController: NSObject {
     }
 
     private func show(over window: NSWindow?) {
+        let isFirstShow = panel == nil
         let panel = ensurePanel()
         // Fresh content every open (Spotlight-style reset): Task 5's
         // provider closure is expected to hand back a view bound to a
         // freshly-reset LauncherViewModel each time, not one that
-        // remembers the previous query.
-        hostingView?.rootView = contentProvider()
+        // remembers the previous query. On the creation pass,
+        // ensurePanel() just built the hosting view with its own fresh
+        // provider() call — replacing rootView again here would
+        // construct (and immediately discard) a second LauncherViewModel
+        // for the same show, so only re-provide content on later shows
+        // of an already-existing panel.
+        if !isFirstShow {
+            hostingView?.rootView = contentProvider()
+        }
         panel.setFrame(frame(over: window), display: false)
         panel.makeKeyAndOrderFront(nil)
         if keyDownMonitor == nil {

@@ -39,9 +39,13 @@ public final class HistoryStore {
     private static let recencyHalfLifeDays = 7.0
 
     /// Weight given to the frecency term relative to text relevance
-    /// (bm25) when both are folded into one ranking score. Chosen so
-    /// frecency reorders among reasonably close text matches without
-    /// ever burying a much stronger textual match under a weak one.
+    /// (bm25) when both are folded into one ranking score. At this
+    /// weight, a sufficiently frequent/recent row CAN outrank a rarer
+    /// row with a stronger textual match — that's by design within the
+    /// FTS-matched set (all candidates already matched the query; among
+    /// them, frecency is meant to dominate so a site you visit
+    /// constantly and recently surfaces first even when its text match
+    /// is weaker than another candidate's).
     private static let frecencyWeight = 2.0
 
     public init(database: NyxDatabase) {
