@@ -70,6 +70,8 @@ final class BrowserTab: Identifiable {
         webView = nil
         isLoading = false
         progress = 0
+        canGoBack = false
+        canGoForward = false
         return state
     }
 
@@ -89,35 +91,49 @@ final class BrowserTab: Identifiable {
         observations = [
             webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
                 let value = webView.url?.absoluteString ?? ""
-                Task { @MainActor in
-                    guard let self, self.urlString != value, !value.isEmpty else { return }
+                Task { @MainActor [weak webView] in
+                    guard let self, let webView, self.webView === webView else { return }
+                    guard self.urlString != value, !value.isEmpty else { return }
                     self.urlString = value
                     self.onStateChange?()
                 }
             },
             webView.observe(\.title, options: [.initial, .new]) { [weak self] webView, _ in
                 let value = webView.title ?? ""
-                Task { @MainActor in
-                    guard let self, self.title != value else { return }
+                Task { @MainActor [weak webView] in
+                    guard let self, let webView, self.webView === webView else { return }
+                    guard self.title != value else { return }
                     self.title = value
                     self.onStateChange?()
                 }
             },
             webView.observe(\.canGoBack, options: [.initial, .new]) { [weak self] webView, _ in
                 let value = webView.canGoBack
-                Task { @MainActor in self?.canGoBack = value }
+                Task { @MainActor [weak webView] in
+                    guard let self, let webView, self.webView === webView else { return }
+                    self.canGoBack = value
+                }
             },
             webView.observe(\.canGoForward, options: [.initial, .new]) { [weak self] webView, _ in
                 let value = webView.canGoForward
-                Task { @MainActor in self?.canGoForward = value }
+                Task { @MainActor [weak webView] in
+                    guard let self, let webView, self.webView === webView else { return }
+                    self.canGoForward = value
+                }
             },
             webView.observe(\.isLoading, options: [.initial, .new]) { [weak self] webView, _ in
                 let value = webView.isLoading
-                Task { @MainActor in self?.isLoading = value }
+                Task { @MainActor [weak webView] in
+                    guard let self, let webView, self.webView === webView else { return }
+                    self.isLoading = value
+                }
             },
             webView.observe(\.estimatedProgress, options: [.initial, .new]) { [weak self] webView, _ in
                 let value = webView.estimatedProgress
-                Task { @MainActor in self?.progress = value }
+                Task { @MainActor [weak webView] in
+                    guard let self, let webView, self.webView === webView else { return }
+                    self.progress = value
+                }
             }
         ]
     }
