@@ -385,5 +385,12 @@ final class NyxWindowCoordinator {
         // Selection is always activated by restore/bootstrap before this runs.
         tab.webView?.loadHTMLString(html, baseURL: nil)
     }
+
+    /// Test hook (UI tests): seeds one history entry via the real
+    /// HistoryStore so the launcher's history results have something
+    /// deterministic to surface, without navigating a webview at all.
+    func seedHistory(url: String, title: String) {
+        try? historyStore.recordVisit(url: url, title: title, at: Date())
+    }
     #endif
 }
