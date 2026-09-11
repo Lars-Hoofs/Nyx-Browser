@@ -74,6 +74,14 @@ final class LauncherPanelController: NSObject {
         self.contentProvider = contentProvider
     }
 
+    deinit {
+        // Backstop for teardown paths that skip closePanel() — same
+        // pattern as PaneCanvasController's mouse monitor. deinit may
+        // read stored properties of a @MainActor class;
+        // NSEvent.removeMonitor is not main-actor-isolated.
+        if let keyDownMonitor { NSEvent.removeMonitor(keyDownMonitor) }
+    }
+
     var isVisible: Bool { panel?.isVisible ?? false }
 
     /// Shows the panel centered over the top third of `window` (spec

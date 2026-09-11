@@ -108,8 +108,16 @@ final class TabManager: NSObject {
 
     // MARK: - Creation / closing / selection
 
+    /// `focusAddress` controls the addressFocusToken bump that sends
+    /// keyboard focus to the sidebar's address field. A NEW empty tab
+    /// wants it (⌘T, the launcher's New Tab command: the user's next act
+    /// is typing a destination); a tab created to immediately navigate to
+    /// a known URL (the launcher's ⌘Enter path) must NOT take it — the
+    /// focused-empty-field state would both invite a stray re-navigating
+    /// Return and suppress SidebarView's URL sync (its `!addressFocused`
+    /// guard) when the navigation commits.
     @discardableResult
-    func newTab(select: Bool = true) -> BrowserTab {
+    func newTab(select: Bool = true, focusAddress: Bool = true) -> BrowserTab {
         let spaceID = selectedSpaceID ?? ensureDefaultSpace()
         let tab = BrowserTab(spaceID: spaceID)
         registerCallbacks(on: tab)
@@ -117,7 +125,7 @@ final class TabManager: NSObject {
         onTabCreated?(tab)
         if select {
             self.select(tab)
-            addressFocusToken += 1
+            if focusAddress { addressFocusToken += 1 }
         }
         onStateChange?()
         return tab

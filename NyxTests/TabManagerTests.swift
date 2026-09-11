@@ -66,6 +66,31 @@ final class TabManagerTests: XCTestCase {
         XCTAssertNotNil(fourth.webView)
     }
 
+    // MARK: - newTab address-focus token (M4 launcher fix round)
+    // Constructing a full NyxWindowCoordinator needs real window
+    // machinery (see WindowCoordinatorFocusTests), so the launcher's two
+    // paths are pinned at the seam the coordinator uses: `.run(.newTab)`
+    // → newTab() (default bump), `.navigate(_, newTab: true)` →
+    // newTab(focusAddress: false) (no bump).
+
+    func testNewTabBumpsAddressFocusTokenByDefault() {
+        let manager = makeManager()
+        let before = manager.addressFocusToken
+        manager.newTab()
+        XCTAssertEqual(manager.addressFocusToken, before + 1,
+                       "a NEW empty tab sends focus to the address field")
+    }
+
+    func testNewTabWithoutFocusAddressLeavesTokenUntouched() {
+        let manager = makeManager()
+        let before = manager.addressFocusToken
+        let tab = manager.newTab(focusAddress: false)
+        XCTAssertEqual(manager.addressFocusToken, before,
+                       "a navigate-to-URL tab must not steal address focus")
+        XCTAssertEqual(manager.selectedTabID, tab.id,
+                       "focusAddress: false still selects the tab")
+    }
+
     // MARK: - closeOtherTabs (M4 launcher command)
 
     func testCloseOtherTabsKeepsOnlySelectedTab() {

@@ -276,7 +276,13 @@ final class NyxWindowCoordinator {
             manager.select(tabID: tabID)
         case .navigate(let url, let newTab):
             if newTab || manager.selectedTab == nil {
-                manager.newTab()
+                // focusAddress: false — this tab exists to show `url`,
+                // not to be typed into; bumping the token would strand
+                // focus in an empty address field AND suppress the URL
+                // sync when the navigation commits (SidebarView's
+                // !addressFocused guard). The launcher's `.run(.newTab)`
+                // COMMAND keeps the default bump via newTab() below.
+                manager.newTab(focusAddress: false)
             }
             // Absolute http/https/file URLs pass through AddressParser
             // unchanged, and navigate(to:) already handles webview
