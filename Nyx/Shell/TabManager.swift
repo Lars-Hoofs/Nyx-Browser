@@ -46,6 +46,17 @@ final class TabManager: NSObject {
     /// for a tab already in `tabs`. The coordinator uses this to wire each
     /// tab into HistoryRecorder without special-casing restore.
     @ObservationIgnored var onTabCreated: ((BrowserTab) -> Void)?
+    /// M5 adblock seam: the coordinator injects the decision + apply/
+    /// remove closures here (never RuleListManager or SiteOverrideStore
+    /// themselves — TabManager stays store-free, matching its other
+    /// callback seams). Handed to every tab in registerCallbacks; the
+    /// didSet also re-propagates to tabs that already exist, so wiring
+    /// order can't strand a tab without a policy.
+    @ObservationIgnored var contentRulePolicy: ContentRulePolicy? {
+        didSet {
+            for tab in tabs { tab.contentRulePolicy = contentRulePolicy }
+        }
+    }
 
     @ObservationIgnored private let factory: WebViewFactory
     @ObservationIgnored private var policy: TabLifecyclePolicy
@@ -448,6 +459,20 @@ final class TabManager: NSObject {
         }
     }
 
+    // MARK: - Content rules (M5 spec §5.6)
+
+    /// Re-runs the content-rule evaluation on every tab holding a live
+    /// webview (hibernated tabs no-op — they re-evaluate in attach()).
+    /// Two callers: RuleListManager.onReady with `force: true` (tabs
+    /// attached before readiness recorded a "block" decision while zero
+    /// lists existed — the retro-application the spec's off-critical-path
+    /// first compile requires) and Task 6's global/site toggles.
+    func reevaluateContentRules(force: Bool = false) {
+        for tab in tabs {
+            tab.evaluateContentRules(force: force)
+        }
+    }
+
     // MARK: - Persistence bridging
 
     func restore(from snapshot: SessionSnapshot) {
@@ -568,6 +593,7 @@ final class TabManager: NSObject {
     // MARK: - Lifecycle internals
 
     private func registerCallbacks(on tab: BrowserTab) {
+        tab.contentRulePolicy = contentRulePolicy
         tab.onStateChange = { [weak self, weak tab] in
             self?.onStateChange?()
             if let self, let tab, tab.id == self.selectedTabID {
@@ -661,7 +687,13 @@ extension TabManager: WKUIDelegate {
         let spaceID = sourceTab?.spaceID ?? selectedSpaceID ?? ensureDefaultSpace()
         let tab = BrowserTab(spaceID: spaceID)
         registerCallbacks(on: tab)
-        tab.attach(popup, uiDelegate: self)
+        // inheritingContentRules: the popup's webview shares the OPENER's
+        // user content controller (that's what the adopted configuration
+        // carries), so the popup inherits the opener's current rule-list
+        // evaluation rather than clobbering it with its own — it
+        // re-evaluates independently on its first didCommit. See
+        // BrowserTab.attach's doc for the shared-controller consequence.
+        tab.attach(popup, uiDelegate: self, inheritingContentRules: true)
         tabs.append(tab)
         onTabCreated?(tab)
         select(tab)

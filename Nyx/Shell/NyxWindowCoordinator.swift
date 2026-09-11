@@ -16,6 +16,10 @@ final class NyxWindowCoordinator {
     private let persistence: SessionPersistence
     private let recorder: HistoryRecorder
     private let historyStore: HistoryStore
+    /// M5 adblock (spec §5.6). Internal (not private) because Task 6's
+    /// menu-toggle plumbing acts on both from the coordinator's surface.
+    let ruleListManager: RuleListManager
+    let siteOverrides: SiteOverrideStore
     private let canvas = PaneCanvasController()
     private var splitViewController: NyxSplitViewController!
     private var windowController: NyxWindowController!
@@ -55,6 +59,37 @@ final class NyxWindowCoordinator {
         recorder = HistoryRecorder(store: historyStore)
         manager = TabManager()
         persistence = SessionPersistence(store: store, manager: manager)
+        siteOverrides = SiteOverrideStore(database: database)
+        ruleListManager = RuleListManager()
+
+        // Adblock wiring (M5 spec §5.6): TabManager sees only closures —
+        // never the store or the rule-list manager. Locals (not self)
+        // are captured so the policy held by `manager` never retains the
+        // coordinator.
+        let overrides = siteOverrides
+        let ruleLists = ruleListManager
+        manager.contentRulePolicy = ContentRulePolicy(
+            shouldBlock: { host in
+                // Global toggle lands in Task 6 (NyxSettings.adblockEnabled);
+                // until then blocking is globally ON — the spec default.
+                // A nil host (nothing committed yet) has no override row
+                // by definition, and a failed store read falls back to
+                // the spec default too (blocking ON — spec §6's
+                // "failure → unblocked" is about COMPILE failures, not a
+                // transient DB read).
+                guard let host else { return true }
+                return !((try? overrides.isBlockingDisabled(host: host)) ?? false)
+            },
+            apply: { ruleLists.apply(to: $0) },
+            remove: { ruleLists.remove(from: $0) })
+        // Tabs attached before the (possibly ~19s first-run, spec §6)
+        // compile finishes recorded a "block" decision against zero
+        // compiled lists — force-re-evaluate them all once readiness
+        // lands. Remove-then-apply inside the evaluation keeps this from
+        // ever stacking duplicates.
+        ruleListManager.onReady = { [weak manager] in
+            manager?.reevaluateContentRules(force: true)
+        }
 
         let sidebar = NSHostingController(rootView: SidebarView(manager: manager))
         splitViewController = NyxSplitViewController(sidebar: sidebar, content: canvas)
@@ -161,6 +196,13 @@ final class NyxWindowCoordinator {
     }
 
     func start() {
+        // PRECONDITION (T4 review): bootstrap() must be called EXACTLY
+        // ONCE per RuleListManager — it has no mid-flight cancellation
+        // checkpoints, so a second call during an in-flight run can
+        // double-fire onReady and duplicate compiles. This is the single
+        // call site; Task 6's toggles re-evaluate tabs but NEVER
+        // re-bootstrap.
+        ruleListManager.bootstrap()
         persistence.restoreOrBootstrap()
         windowController.showWindow(nil)
     }
