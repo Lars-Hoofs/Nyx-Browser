@@ -44,4 +44,12 @@ final class SplitWeightsTests: XCTestCase {
         XCTAssertEqual(result[2], 1.0 / 3.0, accuracy: 0.0001)
         assertNormalized(result)
     }
+
+    func testSanitizedConvergesOnPingPongInput() {
+        assertNormalized(SplitWeights.sanitized([0.01, 0.01, 0.16, 0.82], count: 4))
+    }
+
+    func testSanitizedConvergesOnAdversarialFourPane() {
+        assertNormalized(SplitWeights.sanitized([0.804, 0.004, 0.180, 0.179], count: 4))
+    }
 }
