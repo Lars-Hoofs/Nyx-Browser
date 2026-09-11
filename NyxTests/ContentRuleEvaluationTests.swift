@@ -281,6 +281,49 @@ final class ContentRuleEvaluationTests: XCTestCase {
         XCTAssertEqual(appliedSetCount(for: opener), 1)
     }
 
+    func testMixedDecisionForcedReevaluationDoesNotRepoisonOpenerMarkerWhenPopupActsLast() {
+        // Second-round review regression (final-review Important I-1):
+        // reevaluateContentRules(force:true) — the toggle paths — iterates
+        // `tabs` in ARRAY order, opener first, popup last, so the LAST
+        // sharer to act leaves the shared controller in ITS state while
+        // the OTHER sharer's marker stays stale. Adoption-time
+        // invalidation (one-shot, already spent before this force pass
+        // ever runs) can't catch this; only act-time invalidation
+        // (onContentRulesActed, fired on every act, not just adoption)
+        // keeps every sharer's marker honest.
+        let manager = makeManager()
+        let opener = manager.newTab()
+        opener.navigationDidCommit(URL(string: "https://a.example/")!)
+        guard let openerWebView = opener.webView else {
+            return XCTFail("opener must be live")
+        }
+        let popupWebView = manager.webView(
+            openerWebView,
+            createWebViewWith: openerWebView.configuration,
+            for: StubPopupNavigationAction(),
+            windowFeatures: WKWindowFeatures())
+        let popupTab = manager.tabs.first { $0.webView === popupWebView }
+        overriddenHosts = ["popup.example"]
+        popupTab?.navigationDidCommit(URL(string: "https://popup.example/")!)
+
+        // Mixed decision across the shared controller: opener wants
+        // blocked (not overridden), popup wants unblocked (overridden).
+        // `tabs` order is [opener, popupTab] — opener acts first (applies),
+        // popup acts LAST (removes), leaving the shared controller in
+        // popup's state even though opener's marker just recorded `true`.
+        manager.reevaluateContentRules(force: true)
+        XCTAssertEqual(appliedSetCount(for: opener), 0,
+                       "popup, acting last in the force pass, leaves the shared controller removed")
+
+        // Opener's own marker is stale the instant popup acted afterward.
+        // Its next same-decision commit must still ACT, not skip.
+        events = []
+        opener.navigationDidCommit(URL(string: "https://c.example/")!)
+        XCTAssertEqual(events, [.remove, .apply],
+                       "opener must re-apply, not skip, after popup left the shared controller removed")
+        XCTAssertEqual(appliedSetCount(for: opener), 1)
+    }
+
     // MARK: - Late policy injection
 
     func testLatePolicyInjectionPropagatesToExistingTabs() {

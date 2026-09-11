@@ -64,6 +64,17 @@ final class BrowserTab: Identifiable {
     /// nil (e.g. in tests that don't wire adblock) disables evaluation
     /// entirely.
     @ObservationIgnored var contentRulePolicy: ContentRulePolicy?
+    /// Fired by evaluateContentRules() whenever it ACTS on a controller
+    /// — actually calls remove/apply, not merely re-confirms an already
+    /// current decision. TabManager (registerCallbacks) uses this to
+    /// invalidate every OTHER live tab whose webview shares that same
+    /// WKUserContentController (see attach's shared-controller doc):
+    /// this generalizes the old popup-adoption-only invalidation to
+    /// EVERY act, so a mixed-decision force pass (Task 6's toggle
+    /// paths, which iterate tabs in array order) can't leave the
+    /// non-last-acting sharer's marker stale regardless of which
+    /// sharer happens to act last.
+    @ObservationIgnored var onContentRulesActed: ((WKUserContentController) -> Void)?
     /// The decision last acted on for the CURRENT webview's controller —
     /// the "override state differs" guard for didCommit re-evaluation.
     /// Reset to nil on attach/hibernate: a fresh factory webview has a
@@ -112,15 +123,21 @@ final class BrowserTab: Identifiable {
     /// on its own first didCommit (and any later attach, which gets a
     /// fresh factory webview and therefore a private controller).
     /// Accepted consequence of the shared controller: an apply/remove for
-    /// either tab's site affects both, and the bleed lasts until the
-    /// affected side next evaluates AND ACTS — its next cross-host
+    /// either tab's site affects both, and the bleed lasts only until the
+    /// affected side's marker is next invalidated — which happens
+    /// automatically every time ANY sharer's evaluation ACTS on the
+    /// shared controller, not just once at adoption: BrowserTab fires
+    /// onContentRulesActed whenever evaluateContentRules actually
+    /// removes/applies, and TabManager (registerCallbacks) invalidates
+    /// every OTHER live tab whose controller is that same instance. So
+    /// the affected side's very next evaluation — its next cross-host
     /// commit, a re-attach (fresh factory controller), or a forced
-    /// re-evaluation — never merely its next commit. Adoption therefore
-    /// also invalidates the OPENER's evaluation marker (TabManager calls
-    /// invalidateContentRuleEvaluation): a stale "already applied" marker
-    /// would otherwise skip every future same-decision commit and leave
-    /// the opener unblocked indefinitely after the popup strips the
-    /// shared controller.
+    /// re-evaluation, in WHICHEVER order the sharers happen to act —
+    /// always acts instead of trusting a stale "already applied"/
+    /// "already removed" answer. (This also covers a mixed-decision
+    /// force pass where one sharer acts after the other: each act
+    /// invalidates the other, so neither marker can end up describing a
+    /// controller state the OTHER sharer has since overwritten.)
     func attach(_ webView: WKWebView, uiDelegate: WKUIDelegate?,
                 inheritingContentRules: Bool = false) {
         self.webView = webView
@@ -208,15 +225,22 @@ final class BrowserTab: Identifiable {
         contentRulePolicy.remove(controller)
         if decision { contentRulePolicy.apply(controller) }
         lastContentRuleEvaluation = decision
+        // Just acted on `controller` — tell TabManager so it can
+        // invalidate every OTHER live tab sharing this same controller
+        // (shared-controller marker generalization; see attach's doc
+        // and the property doc above). Fired after lastContentRuleEvaluation
+        // is set, and only for THIS tab's own marker — TabManager is
+        // responsible for never routing it back into the acting tab.
+        onContentRulesActed?(controller)
     }
 
-    /// Popup-adoption support (TabManager's createWebViewWith path): the
-    /// popup shares this tab's user content controller, so this tab's
-    /// marker no longer reflects state it alone controls — future popup
-    /// evaluations can change the controller behind this tab's back.
-    /// Nil-ing the marker makes this tab's next evaluation (cross-host
-    /// commit, re-attach, force) act instead of trusting a stale
-    /// "already applied"/"already removed" answer.
+    /// Shared-controller marker invalidation: called by TabManager
+    /// (the onContentRulesActed wiring in registerCallbacks) whenever
+    /// ANOTHER live tab sharing this tab's user content controller just
+    /// ACTED on it (removed/applied lists) — this tab's marker no longer
+    /// reflects state it alone controls. Nil-ing it makes this tab's
+    /// next evaluation (cross-host commit, re-attach, force) act instead
+    /// of trusting a stale "already applied"/"already removed" answer.
     func invalidateContentRuleEvaluation() {
         lastContentRuleEvaluation = nil
     }

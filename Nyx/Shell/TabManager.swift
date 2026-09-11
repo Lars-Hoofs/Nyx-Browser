@@ -600,6 +600,26 @@ final class TabManager: NSObject {
                 self.onSelectionChange?(tab)   // keeps window title fresh
             }
         }
+        // Shared-controller marker generalization (final-review I-1):
+        // `tab` just ACTED on `controller`. Invalidate every OTHER live
+        // tab (webView != nil, i.e. actually sharing — hibernated tabs
+        // are skipped for free since their controller read is nil and
+        // never === controller) whose webview's controller is that same
+        // instance, so their next evaluation can't trust a marker the
+        // acting tab just made stale. Deliberately skips the acting tab
+        // itself (`other !== tab`) — it just set its OWN marker to the
+        // correct, current decision two lines above in
+        // evaluateContentRules; invalidating it too would be wrong, not
+        // just wasteful.
+        tab.onContentRulesActed = { [weak self, weak tab] controller in
+            guard let self else { return }
+            for other in self.tabs {
+                guard other !== tab,
+                      other.webView?.configuration.userContentController === controller
+                else { continue }
+                other.invalidateContentRuleEvaluation()
+            }
+        }
     }
 
     private func activateIfNeeded(_ tab: BrowserTab) {
@@ -683,14 +703,14 @@ extension TabManager: WKUIDelegate {
                  windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard navigationAction.targetFrame == nil else { return nil }
         let popup = factory.makeWebView(adopting: configuration)
-        let sourceTab = tabs.first { $0.webView === webView }
         // The popup shares the opener's user content controller, so the
-        // opener's "last evaluation" marker no longer describes state the
-        // opener alone controls: after the popup strips/reapplies the
-        // shared controller, a stale marker would make the opener SKIP
-        // every same-decision re-evaluation indefinitely. Invalidate it
-        // so the opener's next cross-host commit acts (review fix).
-        sourceTab?.invalidateContentRuleEvaluation()
+        // opener's "last evaluation" marker no longer describes state
+        // the opener alone controls. No adoption-time invalidation is
+        // needed here anymore — onContentRulesActed (registerCallbacks)
+        // invalidates the opener's marker generally, the first time
+        // EITHER side next acts on the shared controller, which
+        // subsumes this one-shot case.
+        let sourceTab = tabs.first { $0.webView === webView }
         let spaceID = sourceTab?.spaceID ?? selectedSpaceID ?? ensureDefaultSpace()
         let tab = BrowserTab(spaceID: spaceID)
         registerCallbacks(on: tab)
