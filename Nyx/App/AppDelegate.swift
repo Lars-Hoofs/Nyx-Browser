@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func breakUpSplit(_ sender: Any?) { coordinator?.breakUpSplit() }
     @objc func focusNextPane(_ sender: Any?) { coordinator?.focusNextPane() }
     @objc func focusPreviousPane(_ sender: Any?) { coordinator?.focusPreviousPane() }
+    @objc func openLauncher(_ sender: Any?) { coordinator?.showLauncher() }
 
     #if DEBUG
     private func testHTMLLaunchArgument() -> String? {
