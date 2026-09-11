@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import NyxCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -33,11 +32,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         windowController = controller
+        #if DEBUG
         if let testHTML = Self.testHTMLLaunchArgument() {
             webView.loadHTMLString(testHTML, baseURL: nil)
         } else {
             content.navigate(to: "https://example.com")
         }
+        #else
+        content.navigate(to: "https://example.com")
+        #endif
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -67,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         webViewHost?.goForward()
     }
 
+    #if DEBUG
     /// Reads the `-nyx-test-html <value>` launch argument directly from argv.
     ///
     /// `UserDefaults.standard` parses `-key value` launch arguments as
@@ -81,6 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               args.index(after: flagIndex) < args.count else { return nil }
         return args[args.index(after: flagIndex)]
     }
+    #endif
 }
 
 extension AppDelegate: NSMenuItemValidation {
