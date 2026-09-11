@@ -11,17 +11,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             let coordinator = try NyxWindowCoordinator()
             self.coordinator = coordinator
-            coordinator.start()
 
             #if DEBUG
-            // Task 8: applied BEFORE anything else touches the toggle, so
-            // a leftover value from an earlier UITest run in this same
-            // bundle's UserDefaults domain (per-bundle, NOT per-db-name —
-            // see NyxSettings' doc) never leaks into a test that needs a
-            // known starting state.
+            // Task 8: applied BEFORE anything else touches the toggle —
+            // including coordinator.start() below, whose
+            // persistence.restoreOrBootstrap() restores/creates tabs
+            // that attach and immediately evaluate content rules
+            // against adblockEnabled — so a leftover value from an
+            // earlier UITest run in this same bundle's UserDefaults
+            // domain (per-bundle, NOT per-db-name — see NyxSettings'
+            // doc) never leaks into a test that needs a known starting
+            // state.
             if ProcessInfo.processInfo.arguments.contains("-nyx-reset-adblock-state") {
                 coordinator.settings.adblockEnabled = true
             }
+            #endif
+
+            coordinator.start()
+
+            #if DEBUG
             if let testHTML = testHTMLLaunchArgument() {
                 coordinator.loadTestHTML(testHTML)
             }
