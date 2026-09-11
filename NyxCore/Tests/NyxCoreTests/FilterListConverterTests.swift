@@ -93,4 +93,45 @@ final class FilterListConverterTests: XCTestCase {
         let data = try XCTUnwrap(results[0].json.data(using: .utf8))
         _ = try JSONSerialization.jsonObject(with: data)
     }
+
+    /// Regression: a single `$denyallow` source line expands to 1 blocking
+    /// rule + 2 exception rules per listed domain (verified empirically:
+    /// 4 domains here convert to 9 rules on their own). Naive line-count
+    /// batching would happily put this one line in a batch with 9 filler
+    /// lines under maxRules=10 (10 source lines total) and silently hand
+    /// back a list with 18 actual rules. `convert` must detect the
+    /// overshoot after conversion and re-split by source line so every
+    /// returned list still honors maxRules.
+    func testExpandingRuleDoesNotOvershootMaxRules() throws {
+        let denyallowRule = "/promo$denyallow=a.com|b.com|c.com|d.com,domain=example.com"
+        let fillers = (0..<9).map { "||filler-\($0).example.com^" }
+        let filterText = ([denyallowRule] + fillers).joined(separator: "\n")
+
+        let results = try FilterListConverter.convert(name: "denyallow", filterText: filterText, maxRules: 10)
+
+        XCTAssertGreaterThan(results.count, 1, "batching all 10 lines together would overshoot; a re-split must occur")
+        for list in results {
+            XCTAssertLessThanOrEqual(list.ruleCount, 10)
+        }
+        // 9 fillers (1 rule each) + 9 rules from the single denyallow line.
+        XCTAssertEqual(results.map(\.ruleCount).reduce(0, +), 18)
+        XCTAssertEqual(results.map(\.discardedCount).reduce(0, +), 0)
+
+        // Splitting is deterministic for identical input.
+        let again = try FilterListConverter.convert(name: "denyallow", filterText: filterText, maxRules: 10)
+        XCTAssertEqual(again.map(\.identifier), results.map(\.identifier))
+    }
+
+    /// When a single source line's own expansion exceeds maxRules with no
+    /// remaining lines to split away from it, the wrapper must still
+    /// return that (oversized) list rather than dropping rules or
+    /// crashing/looping.
+    func testUnsplittableSingleLineOvershootIsAcceptedRatherThanDropped() throws {
+        let denyallowRule = "/promo$denyallow=a.com|b.com|c.com|d.com,domain=example.com"
+
+        let results = try FilterListConverter.convert(name: "denyallow-solo", filterText: denyallowRule, maxRules: 3)
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].ruleCount, 9, "no rules should be dropped just because they exceed maxRules")
+    }
 }
