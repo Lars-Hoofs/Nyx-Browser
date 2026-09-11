@@ -9,9 +9,38 @@ struct SidebarView: View {
     @State private var addressText = ""
     @FocusState private var addressFocused: Bool
 
-    private var selectedSpaceTabs: [BrowserTab] {
+    /// A row the sidebar list renders: either a plain tab or a whole split
+    /// cluster (spec §5.4), collapsed to one entry per group so a grouped
+    /// tab never also appears as a standalone row.
+    private struct SidebarItem: Identifiable {
+        enum Kind {
+            case tab(BrowserTab)
+            case cluster(groupID: String, tabs: [BrowserTab])
+        }
+        let id: String
+        let kind: Kind
+    }
+
+    /// Walks the space's tabs in order, folding each split group into a
+    /// single cluster item the first time one of its members is seen.
+    private var sidebarItems: [SidebarItem] {
         guard let spaceID = manager.selectedSpaceID else { return [] }
-        return manager.tabs(in: spaceID)
+        var seenGroups = Set<String>()
+        var items: [SidebarItem] = []
+        for tab in manager.tabs(in: spaceID) {
+            if let group = manager.splitGroup(containing: tab.id) {
+                guard !seenGroups.contains(group.id) else { continue }
+                seenGroups.insert(group.id)
+                let members = group.tabIDs.compactMap { id in
+                    manager.tabs.first { $0.id == id }
+                }
+                items.append(SidebarItem(id: group.id,
+                                         kind: .cluster(groupID: group.id, tabs: members)))
+            } else {
+                items.append(SidebarItem(id: tab.id, kind: .tab(tab)))
+            }
+        }
+        return items
     }
 
     var body: some View {
@@ -137,20 +166,110 @@ struct SidebarView: View {
             get: { manager.selectedTabID },
             set: { id in if let id { manager.select(tabID: id) } }
         )) {
-            ForEach(selectedSpaceTabs) { tab in
-                TabRow(tab: tab) { manager.close(tab) }
-                    .tag(tab.id)
-                    .accessibilityIdentifier("nyx.tabRow")
-            }
-            .onMove { offsets, destination in
-                if let spaceID = manager.selectedSpaceID {
-                    manager.moveTab(fromOffsets: offsets, toOffset: destination,
-                                    in: spaceID)
+            ForEach(sidebarItems) { item in
+                switch item.kind {
+                case .tab(let tab):
+                    TabRow(tab: tab) { manager.close(tab) }
+                        .tag(tab.id)
+                        .accessibilityIdentifier("nyx.tabRow")
+                        .contextMenu { tabContextMenu(for: tab) }
+                case .cluster(_, let tabs):
+                    splitCluster(tabs: tabs)
+                        // Clusters collapse N tabs into one row of the
+                        // sidebar's flat order, so a raw index-for-index
+                        // reorder (movePlainTabs below) can't treat them
+                        // as a movable unit — see that function's comment.
+                        .moveDisabled(true)
                 }
             }
+            .onMove(perform: movePlainTabs)
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+    }
+
+    /// Renders one split group (spec §5.4): an inset rounded box with a
+    /// hairline border, members indented inside it. Members aren't List
+    /// rows of their own (the cluster is the single ForEach row), so
+    /// selection and taps are wired manually rather than via `.tag`.
+    private func splitCluster(tabs: [BrowserTab]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(tabs) { tab in
+                TabRow(tab: tab, isSelected: tab.id == manager.selectedTabID) {
+                    manager.close(tab)
+                }
+                .padding(.leading, 10)
+                .accessibilityIdentifier("nyx.tabRow")
+                .contentShape(Rectangle())
+                .onTapGesture { manager.select(tab) }
+                .contextMenu { tabContextMenu(for: tab) }
+            }
+        }
+        .padding(6)
+        .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(.white.opacity(0.07))
+        )
+        .accessibilityIdentifier("nyx.splitCluster")
+    }
+
+    /// Shared context menu for both plain tab rows and cluster member
+    /// rows (spec §5.4 carry-over). "Split with Selected Tab" is hidden
+    /// when there's no other selected tab, `tab` is already in a group
+    /// (TabManager.split refuses a grouped `other`), or the selected
+    /// tab's own group is already at the 4-pane cap (TabManager.split
+    /// refuses growing a full group) — mirrors NyxWindowCoordinator's
+    /// canSplit gate.
+    @ViewBuilder
+    private func tabContextMenu(for tab: BrowserTab) -> some View {
+        if let selected = manager.selectedTab, selected.id != tab.id,
+           manager.splitGroup(containing: tab.id) == nil,
+           (manager.splitGroup(containing: selected.id)?.tabIDs.count ?? 1) < 4 {
+            Button("Split with Selected Tab") { manager.split(selected, with: tab) }
+        }
+        if manager.splitGroup(containing: tab.id) != nil {
+            Button("Remove from Split") { manager.removeFromSplit(tab) }
+            Button("Break Up Split") { manager.dissolveSplit(containing: tab) }
+        }
+        if manager.spaces.count > 1 {
+            Menu("Move to Space") {
+                ForEach(manager.spaces.filter { $0.id != tab.spaceID }) { space in
+                    Button(space.name) { manager.moveTab(tab, toSpace: space.id) }
+                }
+            }
+        }
+        Button("Close Tab") { manager.close(tab) }
+    }
+
+    /// Translates a reorder gesture on the collapsed `sidebarItems` list
+    /// back onto the space's flat tab order. Clusters carry
+    /// `.moveDisabled(true)` above, so they can never be a drag source —
+    /// `offsets` only ever names `.tab` rows — but `destination` is still
+    /// an index into the collapsed list, and a cluster there stands for
+    /// several flat-array slots. `flatStart[i]` is the flat-array index
+    /// the i-th sidebar item starts at (a cluster contributes its member
+    /// count), so translating both offsets and destination through it
+    /// keeps a plain tab's drop position correct even right before/after
+    /// a cluster, without ever needing to reorder the cluster itself.
+    private func movePlainTabs(fromOffsets offsets: IndexSet, toOffset destination: Int) {
+        guard let spaceID = manager.selectedSpaceID else { return }
+        let items = sidebarItems
+        func flatSize(_ item: SidebarItem) -> Int {
+            switch item.kind {
+            case .tab: return 1
+            case .cluster(_, let tabs): return tabs.count
+            }
+        }
+        var flatStart: [Int] = [0]
+        for item in items { flatStart.append(flatStart[flatStart.count - 1] + flatSize(item)) }
+
+        let flatOffsets = IndexSet(offsets.compactMap { index -> Int? in
+            guard case .tab = items[index].kind else { return nil }
+            return flatStart[index]
+        })
+        guard !flatOffsets.isEmpty else { return }
+        manager.moveTab(fromOffsets: flatOffsets, toOffset: flatStart[destination], in: spaceID)
     }
 
     private var newTabButton: some View {
@@ -180,6 +299,11 @@ struct SidebarView: View {
 /// milestone), title or host, close button on hover.
 private struct TabRow: View {
     let tab: BrowserTab
+    /// Manual highlight for cluster member rows, which aren't List rows
+    /// of their own and so get none of List's selection styling for
+    /// free (spec §5.4 — see `SidebarView.splitCluster`). Plain rows
+    /// leave this false and rely on List's own selection highlight.
+    var isSelected: Bool = false
     let onClose: () -> Void
 
     @State private var hovering = false
@@ -217,6 +341,8 @@ private struct TabRow: View {
             }
         }
         .padding(.vertical, 2)
+        .background(isSelected ? Color.white.opacity(0.08) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 5))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
     }
