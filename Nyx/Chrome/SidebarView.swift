@@ -252,6 +252,8 @@ struct SidebarView: View {
     /// count), so translating both offsets and destination through it
     /// keeps a plain tab's drop position correct even right before/after
     /// a cluster, without ever needing to reorder the cluster itself.
+    // Relies on TabManager's invariant: split-group members are contiguous
+    // in the flat array (compacted at split time).
     private func movePlainTabs(fromOffsets offsets: IndexSet, toOffset destination: Int) {
         guard let spaceID = manager.selectedSpaceID else { return }
         let items = sidebarItems

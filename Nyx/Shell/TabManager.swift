@@ -222,6 +222,7 @@ final class TabManager: NSObject {
             return
         }
         let before = visibleLayout
+        let finalTabIDs: [String]
         if var group = splitGroup(containing: anchor.id) {
             guard group.tabIDs.count < 4 else {
                 NSLog("Nyx: split cap (4) reached")
@@ -230,13 +231,54 @@ final class TabManager: NSObject {
             group.tabIDs.append(other.id)
             group.weights = SplitWeights.appending(to: group.weights)
             replaceGroup(group)
+            finalTabIDs = group.tabIDs
         } else {
-            splitGroups.append(RuntimeSplitGroup(
+            let newGroup = RuntimeSplitGroup(
                 id: UUID().uuidString,
                 tabIDs: [anchor.id, other.id],
-                weights: SplitWeights.equal(count: 2)))
+                weights: SplitWeights.equal(count: 2))
+            splitGroups.append(newGroup)
+            finalTabIDs = newGroup.tabIDs
         }
+        compactGroupContiguous(inserting: other.id, groupTabIDs: finalTabIDs)
         finishGroupMutation(before: before)
+    }
+
+    /// Establishes the invariant `SidebarView.movePlainTabs` relies on:
+    /// every split group's members sit as one contiguous run in `tabs`
+    /// (array order, independent of `group.tabIDs` pane order, which is
+    /// untouched here). Called once per `split()`, right after `other`
+    /// joins `groupTabIDs`: pulls `other` out of wherever it currently
+    /// sits in `tabs` and reinserts it immediately after the last OTHER
+    /// member of the group — the tail of the anchor's existing block (a
+    /// singleton block of just `anchor` the first time a group forms).
+    /// Every prior split already left the group contiguous, so relocating
+    /// just the newcomer is always enough to keep it that way; tabs not
+    /// in the group (same space or not) keep their relative order.
+    private func compactGroupContiguous(inserting other: String, groupTabIDs: [String]) {
+        guard let otherIndex = tabs.firstIndex(where: { $0.id == other }) else { return }
+        let otherTab = tabs.remove(at: otherIndex)
+        let restIDs = Set(groupTabIDs).subtracting([other])
+        let insertIndex = tabs.lastIndex(where: { restIDs.contains($0.id) }).map { $0 + 1 } ?? tabs.count
+        tabs.insert(otherTab, at: insertIndex)
+    }
+
+    /// The other direction of the same invariant: called after a tab
+    /// (`tabID`) has just been detached from a group that still has
+    /// `remainingMemberIDs` (≥ 2) left. If `tabID` sat between the
+    /// remaining members' current min/max index it's now a wedge
+    /// breaking their contiguity, so relocate it to just after the
+    /// block instead — a no-op when it was already at an edge (nothing
+    /// was between the remaining members either way).
+    private func relocateOutOfGroupBlockIfInterior(_ tabID: String, remainingMemberIDs: [String]) {
+        guard let tabIndex = tabs.firstIndex(where: { $0.id == tabID }) else { return }
+        let memberSet = Set(remainingMemberIDs)
+        let memberIndices = tabs.indices.filter { memberSet.contains(tabs[$0].id) }
+        guard let minIndex = memberIndices.min(), let maxIndex = memberIndices.max(),
+              tabIndex > minIndex, tabIndex < maxIndex else { return }
+        let movedTab = tabs.remove(at: tabIndex)
+        let insertIndex = tabs.lastIndex(where: { memberSet.contains($0.id) }).map { $0 + 1 } ?? tabs.count
+        tabs.insert(movedTab, at: insertIndex)
     }
 
     /// Removes a tab from its group, redistributing weights; a group left
@@ -252,6 +294,17 @@ final class TabManager: NSObject {
             splitGroups.removeAll { $0.id == group.id }
         } else {
             replaceGroup(group)
+            // The tab bookkeeping above just detached still leaves its
+            // BrowserTab sitting in `tabs` wherever it physically was —
+            // if that was the interior of the block (not an edge), the
+            // remaining members are now split apart by a non-member,
+            // breaking the contiguity invariant `split()` establishes.
+            // close() and moveTab(toSpace:) both self-heal this (they
+            // remove/relocate the departing tab out of the space's
+            // filtered view right after this call), but a standalone
+            // removeFromSplit (the sidebar's "Remove from Split" menu
+            // item) does not, so fix it here.
+            relocateOutOfGroupBlockIfInterior(tab.id, remainingMemberIDs: group.tabIDs)
         }
         finishGroupMutation(before: before)
     }

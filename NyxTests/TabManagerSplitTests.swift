@@ -135,6 +135,52 @@ final class TabManagerSplitTests: XCTestCase {
         XCTAssertEqual(manager.splitGroups[0].weights, [0.5, 0.5])
     }
 
+    func testSplitCompactsNonAdjacentMembersContiguous() {
+        let manager = makeManager()
+        let a = manager.newTab()
+        let b = manager.newTab()
+        let c = manager.newTab()
+        XCTAssertEqual(manager.tabs(in: a.spaceID).map(\.id), [a.id, b.id, c.id])
+        manager.split(a, with: c)   // non-adjacent: c hops over b
+        XCTAssertEqual(manager.tabs(in: a.spaceID).map(\.id), [a.id, c.id, b.id])
+        // Pane order (group.tabIDs) is untouched — only sidebar/flat order moved.
+        XCTAssertEqual(manager.splitGroup(containing: a.id)?.tabIDs, [a.id, c.id])
+    }
+
+    func testExtendingGroupWithNonAdjacentTabKeepsMembersContiguous() {
+        let manager = makeManager()
+        let a = manager.newTab()
+        let c = manager.newTab()
+        let b = manager.newTab()
+        let d = manager.newTab()
+        let e = manager.newTab()   // the fourth tab created (after a, c, b, d)
+        manager.split(a, with: c)   // group {a, c}: [a, c, b, d, e]
+        XCTAssertEqual(manager.tabs(in: a.spaceID).map(\.id), [a.id, c.id, b.id, d.id, e.id])
+        manager.split(a, with: e)   // extend with e — non-adjacent, past b and d
+        let order = manager.tabs(in: a.spaceID).map(\.id)
+        // All three group members contiguous, in a single unbroken run.
+        let memberIndices = order.indices.filter { [a.id, c.id, e.id].contains(order[$0]) }
+        XCTAssertEqual(memberIndices, Array((memberIndices.min()!)...(memberIndices.max()!)))
+        // Non-members (b, d) keep their relative order.
+        XCTAssertLessThan(order.firstIndex(of: b.id)!, order.firstIndex(of: d.id)!)
+        XCTAssertEqual(order, [a.id, c.id, e.id, b.id, d.id])
+    }
+
+    func testRemoveFromSplitKeepsRemainingMembersContiguous() {
+        let manager = makeManager()
+        let a = manager.newTab()
+        let b = manager.newTab()
+        let c = manager.newTab()
+        manager.split(a, with: b)
+        manager.split(a, with: c)   // group {a, b, c}, contiguous: [a, b, c]
+        XCTAssertEqual(manager.tabs(in: a.spaceID).map(\.id), [a.id, b.id, c.id])
+        manager.removeFromSplit(b)  // b was the INTERIOR member of the block
+        XCTAssertEqual(Set(manager.splitGroup(containing: a.id)?.tabIDs ?? []), [a.id, c.id])
+        // a and c (still grouped) must stay adjacent; b (now plain) is
+        // pushed out of the block rather than left wedged between them.
+        XCTAssertEqual(manager.tabs(in: a.spaceID).map(\.id), [a.id, c.id, b.id])
+    }
+
     func testMoveTabToSpaceLeavesGroup() {
         let manager = makeManager()
         let a = manager.newTab()
