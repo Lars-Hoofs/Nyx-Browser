@@ -39,6 +39,19 @@ public final class SessionStore {
                 t.column("value", .text)
             }
         }
+        migrator.registerMigration("v2") { db in
+            try db.create(table: "split_group") { t in
+                t.column("id", .text).primaryKey()
+                t.column("spaceID", .text).notNull().indexed()
+                    .references("space", onDelete: .cascade)
+                t.column("orderIndex", .integer).notNull()
+                t.column("weightsJSON", .text).notNull()
+            }
+            try db.alter(table: "tab") { t in
+                t.add(column: "splitGroupID", .text)
+                    .references("split_group", onDelete: .setNull)
+            }
+        }
         return migrator
     }
 
@@ -46,11 +59,13 @@ public final class SessionStore {
         try dbQueue.read { db in
             let spaces = try SpaceRecord.order(Column("orderIndex")).fetchAll(db)
             let tabs = try TabRecord.order(Column("orderIndex")).fetchAll(db)
+            let splitGroups = try SplitGroupRecord.order(Column("orderIndex")).fetchAll(db)
             let selectedSpaceID = try String.fetchOne(
                 db, sql: "SELECT value FROM meta WHERE key = 'selectedSpaceID'")
             let selectedTabID = try String.fetchOne(
                 db, sql: "SELECT value FROM meta WHERE key = 'selectedTabID'")
             return SessionSnapshot(spaces: spaces, tabs: tabs,
+                                   splitGroups: splitGroups,
                                    selectedSpaceID: selectedSpaceID,
                                    selectedTabID: selectedTabID)
         }
@@ -59,8 +74,10 @@ public final class SessionStore {
     public func save(_ snapshot: SessionSnapshot) throws {
         try dbQueue.write { db in
             try db.execute(sql: "DELETE FROM tab")
+            try db.execute(sql: "DELETE FROM split_group")
             try db.execute(sql: "DELETE FROM space")
             for space in snapshot.spaces { try space.insert(db) }
+            for group in snapshot.splitGroups { try group.insert(db) }
             for tab in snapshot.tabs { try tab.insert(db) }
             try db.execute(sql: "DELETE FROM meta")
             if let id = snapshot.selectedSpaceID {

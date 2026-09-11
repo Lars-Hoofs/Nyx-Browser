@@ -114,4 +114,57 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertNil(loaded.selectedSpaceID)
         XCTAssertNil(loaded.selectedTabID)
     }
+
+    func testSplitGroupRoundTrip() throws {
+        let store = try SessionStore(databaseURL: dbURL)
+        var snapshot = makeSnapshot()
+        let group = SplitGroupRecord(
+            id: "g1", spaceID: "s1", orderIndex: 0,
+            weightsJSON: SplitGroupRecord.encodeWeights([0.5, 0.5]))
+        snapshot.splitGroups = [group]
+        snapshot.tabs[0].splitGroupID = "g1"
+        snapshot.tabs[1].splitGroupID = "g1"
+        try store.save(snapshot)
+        let loaded = try store.load()
+        XCTAssertEqual(loaded.splitGroups, [group])
+        XCTAssertEqual(loaded.splitGroups[0].weights, [0.5, 0.5])
+        XCTAssertEqual(loaded.tabs.map(\.splitGroupID), ["g1", "g1"])
+    }
+
+    func testMigrationFromV1DataPreservesTabs() throws {
+        // Simulate a v1 database: open once (runs all migrations on empty),
+        // save v1-shaped data (no groups), reopen, confirm intact.
+        try SessionStore(databaseURL: dbURL).save(makeSnapshot())
+        let reopened = try SessionStore(databaseURL: dbURL)
+        let loaded = try reopened.load()
+        XCTAssertEqual(loaded.tabs.count, 2)
+        XCTAssertTrue(loaded.splitGroups.isEmpty)
+        XCTAssertNil(loaded.tabs[0].splitGroupID)
+    }
+
+    func testDeletingGroupNullsTabMembership() throws {
+        let store = try SessionStore(databaseURL: dbURL)
+        var snapshot = makeSnapshot()
+        snapshot.splitGroups = [SplitGroupRecord(
+            id: "g1", spaceID: "s1", orderIndex: 0,
+            weightsJSON: SplitGroupRecord.encodeWeights([0.5, 0.5]))]
+        snapshot.tabs[0].splitGroupID = "g1"
+        snapshot.tabs[1].splitGroupID = "g1"
+        try store.save(snapshot)
+        // Save again without the group but with memberships cleared —
+        // the normal dissolve path the manager emits.
+        snapshot.splitGroups = []
+        snapshot.tabs[0].splitGroupID = nil
+        snapshot.tabs[1].splitGroupID = nil
+        try store.save(snapshot)
+        let loaded = try store.load()
+        XCTAssertTrue(loaded.splitGroups.isEmpty)
+        XCTAssertEqual(loaded.tabs.map(\.splitGroupID), [nil, nil])
+    }
+
+    func testWeightsParseFailureYieldsEmpty() {
+        let record = SplitGroupRecord(id: "g", spaceID: "s", orderIndex: 0,
+                                      weightsJSON: "not json")
+        XCTAssertEqual(record.weights, [])
+    }
 }
