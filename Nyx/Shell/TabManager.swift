@@ -27,6 +27,14 @@ final class TabManager: NSObject {
 
     @ObservationIgnored var onStateChange: (() -> Void)?
     @ObservationIgnored var onSelectionChange: ((BrowserTab?) -> Void)?
+    /// Fires immediately after a tab is hibernated by the manager (MRU
+    /// eviction or memory pressure — the only two callers of
+    /// `hibernateVictims`) with its captured interaction-state blob, so
+    /// SessionPersistence can write that tab's row without waiting for the
+    /// next debounced full-session save. Never fired from `close()`: the
+    /// tab is being deleted outright, so there is no row left to target
+    /// once it's gone (see close()'s own comment).
+    @ObservationIgnored var onTabHibernated: ((String, Data?) -> Void)?
     /// Canvas re-layout trigger: fires only when a change actually altered
     /// the visible pane layout — the visible tab set or its weights.
     /// Mutations to non-visible groups and focus moves within a group fire
@@ -38,6 +46,11 @@ final class TabManager: NSObject {
     @ObservationIgnored private var policy: TabLifecyclePolicy
     /// Most-recently-used first; only ids of tabs holding live webviews.
     @ObservationIgnored private var mruLive: [String] = []
+    /// Retained for the lifetime of this TabManager: a DispatchSourceMemoryPressure
+    /// with no other owner suspends/cancels itself once deallocated, so
+    /// this property's only job is to keep the source alive for as long as
+    /// the manager is — there is no explicit cancel() on teardown, and none
+    /// is needed since TabManager itself lives for the app's lifetime.
     @ObservationIgnored private var memoryPressureSource: DispatchSourceMemoryPressure?
 
     init(factory: WebViewFactory? = nil,
@@ -106,6 +119,11 @@ final class TabManager: NSObject {
 
     func close(_ tab: BrowserTab) {
         removeFromSplit(tab)   // closing a pane unsplits (spec §5.1)
+        // hibernate() (not just detach) tears the webview down AND leaves
+        // the captured interactionState in tab.pendingInteractionState —
+        // discarded along with `tab` right below today, but kept here
+        // (rather than a bare webview teardown) for a future undo-close
+        // that would want to reopen this tab with its state intact.
         tab.hibernate()
         mruLive.removeAll { $0 == tab.id }
         tabs.removeAll { $0.id == tab.id }
@@ -419,7 +437,8 @@ final class TabManager: NSObject {
                                                 pinned: pinnedTabIDs)
         guard !victims.isEmpty else { return }
         for id in victims {
-            tabs.first { $0.id == id }?.hibernate()
+            let state = tabs.first { $0.id == id }?.hibernate()
+            onTabHibernated?(id, state)
             mruLive.removeAll { $0 == id }
         }
         onStateChange?()

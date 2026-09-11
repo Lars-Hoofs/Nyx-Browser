@@ -61,6 +61,8 @@ extension AppDelegate: NSMenuItemValidation {
         case #selector(goBack(_:)): return coordinator?.canGoBack ?? false
         case #selector(goForward(_:)): return coordinator?.canGoForward ?? false
         case #selector(closeTab(_:)): return coordinator?.canCloseTab ?? false
+        case #selector(selectNextTab(_:)), #selector(selectPreviousTab(_:)):
+            return (coordinator?.manager.tabs.count ?? 0) > 1
         default: return true
         }
     }
