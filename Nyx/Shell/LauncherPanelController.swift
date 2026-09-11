@@ -23,9 +23,11 @@ private final class LauncherPanel: NSPanel {
 /// rounded corners, hairline border per §8), positioning, and every way
 /// it can close (Esc, resign-key/click-outside, explicit hide/toggle).
 ///
-/// M4 Task 4 ships the shell only — `LauncherView` is a static field +
-/// placeholder list, and nothing calls `toggle(over:)` yet (Task 6 wires
-/// ⌘K). `contentProvider` matches the brief's interface literally: no
+/// M4 Task 5 wires the real content: `NyxWindowCoordinator` owns an
+/// instance and its `contentProvider` hands back a `LauncherView` bound
+/// to a FRESH `LauncherViewModel` on every show (Spotlight-style reset —
+/// see `show(over:)` below). Task 6 adds the ⌘K menu entry point.
+/// `contentProvider` matches the brief's interface literally: no
 /// generics were needed since `LauncherView` is already a concrete type,
 /// so there was nothing to simplify away to `init(rootView:)`.
 @MainActor
@@ -51,6 +53,22 @@ final class LauncherPanelController: NSObject {
     /// one hook to reset launcher state instead of needing a case per
     /// cause.
     var onDismiss: (() -> Void)?
+
+    /// Keyboard hook for the launcher's ↑/↓/Enter/⌘Enter (Task 5): return
+    /// true to consume the event. Delivered from a LOCAL NSEvent monitor,
+    /// not the responder chain — an editing text field's field editor
+    /// consumes arrows (caret moves) and Return (insertNewline) itself,
+    /// so they never bubble out of it (verified empirically: a SwiftUI
+    /// `onKeyPress` on the focused field never saw Return on this SDK).
+    /// The monitor is installed per `show(over:)`, removed on EVERY close
+    /// path (`closePanel()` is the single close funnel), and additionally
+    /// gated on the event's window being THIS panel — a hidden launcher
+    /// can never see, let alone steal, the main window's keystrokes
+    /// (M4 constraint: no focus theft while closed). Esc is deliberately
+    /// NOT routed through this hook; it keeps its Task 4 path down the
+    /// responder chain into `cancelOperation(_:)`.
+    var onKeyDown: ((NSEvent) -> Bool)?
+    private var keyDownMonitor: Any?
 
     init(contentProvider: @escaping () -> LauncherView) {
         self.contentProvider = contentProvider
@@ -83,12 +101,23 @@ final class LauncherPanelController: NSObject {
         hostingView?.rootView = contentProvider()
         panel.setFrame(frame(over: window), display: false)
         panel.makeKeyAndOrderFront(nil)
+        if keyDownMonitor == nil {
+            keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, let panel = self.panel, event.window === panel
+                else { return event }
+                return self.onKeyDown?(event) == true ? nil : event
+            }
+        }
     }
 
     private func closePanel() {
         guard !isClosing, let panel, panel.isVisible else { return }
         isClosing = true
         defer { isClosing = false }
+        if let keyDownMonitor {
+            NSEvent.removeMonitor(keyDownMonitor)
+            self.keyDownMonitor = nil
+        }
         panel.orderOut(nil)
         onDismiss?()
     }
@@ -97,11 +126,16 @@ final class LauncherPanelController: NSObject {
         let windowFrame = window?.frame
             ?? NSScreen.main?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        // Clamp against the screen the window actually sits on, falling
+        // back to the main screen (mirroring the window-frame fallback).
+        let screenFrame = window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
         // NSHostingView's width is pinned to the chrome view (constant
         // panelWidth — only height ever changes), so `fittingSize` here
         // reports the SwiftUI content's ideal height at that fixed width.
         let contentHeight = hostingView?.fittingSize.height ?? Self.maxPanelHeight
-        return Self.panelFrame(overWindowFrame: windowFrame, rawContentHeight: contentHeight)
+        return Self.panelFrame(overWindowFrame: windowFrame,
+                               rawContentHeight: contentHeight,
+                               within: screenFrame)
     }
 
     /// Pure geometry, unit-tested directly: horizontally centered over
@@ -110,12 +144,28 @@ final class LauncherPanelController: NSObject {
     /// the top third" — Spotlight-style, not vertically centered in the
     /// window). Height is content-driven but never exceeds
     /// `maxPanelHeight`.
+    ///
+    /// When `screenFrame` is given, the ideal placement is then clamped
+    /// to it, so a tiny or edge-hugging window can't push the panel
+    /// off-screen. Clamp order is load-bearing: the max edge bound is
+    /// applied BEFORE the min edge bound, so when the screen is narrower/
+    /// shorter than the panel the panel pins to the screen's min edge
+    /// (fully readable from its origin) instead of hanging off it. The
+    /// bounds use the screen's own min/max — never an assumed (0, 0)
+    /// origin, which would be wrong for secondary displays positioned
+    /// left of or below the main one. `nil` (the default) keeps the
+    /// unclamped ideal placement.
     static func panelFrame(overWindowFrame windowFrame: CGRect,
-                           rawContentHeight: CGFloat) -> CGRect {
+                           rawContentHeight: CGFloat,
+                           within screenFrame: CGRect? = nil) -> CGRect {
         let height = min(rawContentHeight, maxPanelHeight)
-        let x = windowFrame.midX - panelWidth / 2
+        var x = windowFrame.midX - panelWidth / 2
         let topThird = windowFrame.maxY - windowFrame.height / 3
-        let y = topThird - height
+        var y = topThird - height
+        if let screenFrame {
+            x = max(min(x, screenFrame.maxX - panelWidth), screenFrame.minX)
+            y = max(min(y, screenFrame.maxY - height), screenFrame.minY)
+        }
         return CGRect(x: x, y: y, width: panelWidth, height: height)
     }
 

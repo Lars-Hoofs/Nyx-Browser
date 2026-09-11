@@ -164,6 +164,23 @@ final class TabManager: NSObject {
         onStateChange?()
     }
 
+    /// Launcher command (M4): closes every tab in the SELECTED SPACE
+    /// except the visible set — the selected tab's whole split group, or
+    /// just the selected tab when it isn't in one. Group semantics come
+    /// from routing each victim through `close()` (a victim leaves its
+    /// own split group first; a victims' group left under 2 members
+    /// dissolves). Victims never include the selection, so `close()`'s
+    /// reselection branch never runs and the selection is stable
+    /// throughout. Other spaces are untouched.
+    func closeOtherTabs() {
+        guard selectedTabID != nil, let spaceID = selectedSpaceID else { return }
+        let survivors = pinnedTabIDs   // Set(visibleTabIDs) — the visible set
+        // tabs(in:) snapshots before the loop; close() mutates `tabs`.
+        for tab in tabs(in: spaceID) where !survivors.contains(tab.id) {
+            close(tab)
+        }
+    }
+
     func select(tabID: String) {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
         select(tab)
