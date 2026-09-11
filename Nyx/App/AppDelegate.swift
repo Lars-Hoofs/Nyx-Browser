@@ -33,7 +33,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         windowController = controller
-        content.navigate(to: "https://example.com")
+        if let testHTML = Self.testHTMLLaunchArgument() {
+            webView.loadHTMLString(testHTML, baseURL: nil)
+        } else {
+            content.navigate(to: "https://example.com")
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -61,6 +65,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func goForward(_ sender: Any?) {
         webViewHost?.goForward()
+    }
+
+    /// Reads the `-nyx-test-html <value>` launch argument directly from argv.
+    ///
+    /// `UserDefaults.standard` parses `-key value` launch arguments as
+    /// old-style ("NeXTSTEP") property list fragments, and a value that
+    /// starts with `<` is taken as hex-encoded `NSData`, not a literal
+    /// string. Since our HTML fixtures start with `<html>`, that parse
+    /// fails and `UserDefaults` silently drops the value — so we read
+    /// `ProcessInfo.arguments` ourselves instead.
+    private static func testHTMLLaunchArgument() -> String? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let flagIndex = args.firstIndex(of: "-nyx-test-html"),
+              args.index(after: flagIndex) < args.count else { return nil }
+        return args[args.index(after: flagIndex)]
     }
 }
 
