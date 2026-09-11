@@ -4,8 +4,8 @@ import WebKit
 import NyxCore
 
 /// Composition root (M1 final-review recommendation): owns the window,
-/// the split, the pane, the manager, and persistence. AppDelegate only
-/// bootstraps this and forwards menu actions.
+/// the split, the pane canvas, the manager, and persistence. AppDelegate
+/// only bootstraps this and forwards menu actions.
 ///
 /// Not an NSObject subclass: NSObject's designated `init()` cannot be
 /// overridden by a throwing `init()`, and nothing here needs Obj-C
@@ -14,9 +14,12 @@ import NyxCore
 final class NyxWindowCoordinator {
     let manager: TabManager
     private let persistence: SessionPersistence
-    private let pane = PaneViewController()
+    private let canvas = PaneCanvasController()
     private var splitViewController: NyxSplitViewController!
     private var windowController: NyxWindowController!
+    /// Last selection id seen by onSelectionChange — distinguishes real
+    /// selection transitions from same-tab re-fires (see closure comment).
+    private var lastFocusedTabID: String?
 
     init() throws {
         let dbURL = DatabaseLocation.url()
@@ -41,14 +44,81 @@ final class NyxWindowCoordinator {
         persistence = SessionPersistence(store: store, manager: manager)
 
         let sidebar = NSHostingController(rootView: SidebarView(manager: manager))
-        splitViewController = NyxSplitViewController(sidebar: sidebar, content: pane)
+        splitViewController = NyxSplitViewController(sidebar: sidebar, content: canvas)
         windowController = NyxWindowController(contentViewController: splitViewController)
 
+        // Both manager callbacks re-layout SYNCHRONOUSLY (T7 review): the
+        // canvas's layoutGeneration guard depends on synchronous re-entry —
+        // no Task {} / DispatchQueue.async here, ever.
         manager.onSelectionChange = { [weak self] tab in
-            self?.pane.present(tab?.webView)
+            guard let self else { return }
+            self.relayoutCanvas()
             let title = tab?.title ?? ""
-            self?.windowController.window?.title = title.isEmpty ? "Nyx" : title
+            self.windowController.window?.title = title.isEmpty ? "Nyx" : title
+            // onSelectionChange also RE-fires for the selected tab's own
+            // url/title mutations (TabManager.registerCallbacks keeps the
+            // window title fresh through it) — moving the first responder
+            // on those steals focus from the address field mid-typing
+            // whenever the page ticks its title. So the responder hop runs
+            // only on a real selection TRANSITION (id change), and still
+            // AFTER relayoutCanvas: the webview must already sit in the
+            // window's view hierarchy for makeFirstResponder to stick.
+            if Self.shouldMoveResponder(to: tab?.id, from: self.lastFocusedTabID) {
+                self.moveFirstResponderToFocusedPane(tab)
+            }
+            self.lastFocusedTabID = tab?.id
         }
+        manager.onVisibleSetChange = { [weak self] in self?.relayoutCanvas() }
+        canvas.onPaneClicked = { [weak self] in self?.manager.select(tabID: $0) }
+        canvas.onWeightsCommitted = { [weak self] in
+            self?.manager.updateWeights(groupID: $0, weights: $1)
+        }
+    }
+
+    /// Pure transition guard for the responder hop, extracted so the
+    /// regression above stays unit-tested without any window machinery:
+    /// move only when the selection actually changed to a tab — never on
+    /// same-tab re-fires, never on deselection.
+    static func shouldMoveResponder(to newID: String?, from lastID: String?) -> Bool {
+        newID != nil && newID != lastID
+    }
+
+    /// Keyboard focus follows pane focus (final review): switching panes
+    /// inside a visible split (⌥⌘←/→, pane click) must route key events to
+    /// the newly focused pane's webview, not leave them with the old one.
+    /// Scoped to splits only — a selected tab's group is always the
+    /// visible one, so a non-nil group means "in a visible split". Plain
+    /// tab switches keep AppKit's own focus behavior (e.g. an address
+    /// field focus in flight must not be stolen). Skips when the current
+    /// first responder already is (or sits inside) the target webview —
+    /// WebKit parks focus on an internal content view, so an identity
+    /// check alone would re-steal focus on every callback.
+    private func moveFirstResponderToFocusedPane(_ tab: BrowserTab?) {
+        guard let tab,
+              manager.splitGroup(containing: tab.id) != nil,
+              let webView = tab.webView,
+              let window = windowController.window else { return }
+        if let responder = window.firstResponder as? NSView,
+           responder === webView || responder.isDescendant(of: webView) { return }
+        window.makeFirstResponder(webView)
+    }
+
+    /// Rebuilds the canvas from the manager's visible set. The canvas may
+    /// deliver transient layouts mid-mutation; the manager's final callback
+    /// state is authoritative, so this never dedupes or defers.
+    private func relayoutCanvas() {
+        let visible = manager.visibleTabIDs
+        let entries: [(id: String, webView: WKWebView?)] = visible.compactMap { id in
+            guard let tab = manager.tabs.first(where: { $0.id == id }) else { return nil }
+            return (id: id, webView: tab.webView)
+        }
+        let group = manager.selectedTab.flatMap {
+            manager.splitGroup(containing: $0.id)
+        }
+        canvas.layout(tabs: entries,
+                      weights: group?.weights ?? [1.0],
+                      groupID: group?.id,
+                      focusedTabID: manager.selectedTabID)
     }
 
     func start() {
@@ -84,6 +154,35 @@ final class NyxWindowCoordinator {
     func selectNextTab() { selectAdjacentTab(offset: 1) }
     func selectPreviousTab() { selectAdjacentTab(offset: -1) }
 
+    // MARK: - Split menu plumbing (Task 10 wires the menu items)
+
+    /// Splits the current tab with the first splittable same-space tab
+    /// (spec §5.1). TabManager enforces the cap and logs refusals.
+    func splitWithNextTab() {
+        guard let current = manager.selectedTab,
+              let next = splitCandidate(for: current) else { return }
+        manager.split(current, with: next)
+    }
+
+    func breakUpSplit() {
+        guard let current = manager.selectedTab else { return }
+        manager.dissolveSplit(containing: current)
+    }
+
+    /// Pane focus = selecting the adjacent tab in the group's pane order.
+    func focusNextPane() { focusAdjacentPane(offset: 1) }
+    func focusPreviousPane() { focusAdjacentPane(offset: -1) }
+
+    var canSplit: Bool {
+        guard let current = manager.selectedTab else { return false }
+        let groupCount = manager.splitGroup(containing: current.id)?.tabIDs.count ?? 1
+        return groupCount < 4 && splitCandidate(for: current) != nil
+    }
+
+    var isInSplit: Bool {
+        manager.selectedTab.flatMap { manager.splitGroup(containing: $0.id) } != nil
+    }
+
     var canGoBack: Bool { manager.selectedTab?.canGoBack ?? false }
     var canGoForward: Bool { manager.selectedTab?.canGoForward ?? false }
     var canCloseTab: Bool { manager.selectedTab != nil }
@@ -97,6 +196,24 @@ final class NyxWindowCoordinator {
         else { return }
         let next = (index + offset + inSpace.count) % inSpace.count
         manager.select(inSpace[next])
+    }
+
+    /// The tab a split would pull in: first same-space tab that is neither
+    /// the current tab nor in ANY split group — a member of another group
+    /// would make TabManager refuse, so counting it would enable a menu
+    /// item that silently no-ops.
+    private func splitCandidate(for current: BrowserTab) -> BrowserTab? {
+        manager.tabs(in: current.spaceID).first {
+            $0.id != current.id && manager.splitGroup(containing: $0.id) == nil
+        }
+    }
+
+    private func focusAdjacentPane(offset: Int) {
+        guard let current = manager.selectedTab,
+              let group = manager.splitGroup(containing: current.id),
+              let index = group.tabIDs.firstIndex(of: current.id) else { return }
+        let next = (index + offset + group.tabIDs.count) % group.tabIDs.count
+        manager.select(tabID: group.tabIDs[next])
     }
 
     #if DEBUG

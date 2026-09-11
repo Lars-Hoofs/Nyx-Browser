@@ -10,9 +10,10 @@ public struct TabLifecyclePolicy {
 
     /// mruLiveTabs: ids of tabs that currently hold a live webview,
     /// most-recently-used first. Returns the ids to hibernate now.
-    /// The selected tab is never evicted regardless of position.
-    public func evictionCandidates(mruLiveTabs: [String], selected: String?) -> [String] {
-        let evictable = mruLiveTabs.filter { $0 != selected }
+    /// Pinned tabs (every visible pane — the whole split group) are never
+    /// evicted; of the rest, keep the `warmLimit` most recent.
+    public func evictionCandidates(mruLiveTabs: [String], pinned: Set<String>) -> [String] {
+        let evictable = mruLiveTabs.filter { !pinned.contains($0) }
         guard evictable.count > warmLimit else { return [] }
         return Array(evictable.dropFirst(warmLimit))
     }

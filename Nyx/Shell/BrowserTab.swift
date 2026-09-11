@@ -9,7 +9,7 @@ import NyxCore
 @Observable
 final class BrowserTab: Identifiable {
     let id: String
-    let spaceID: String
+    private(set) var spaceID: String
     var title: String
     var urlString: String
     var isLoading = false
@@ -17,6 +17,7 @@ final class BrowserTab: Identifiable {
     var canGoBack = false
     var canGoForward = false
     private(set) var webView: WKWebView?
+    private(set) var isMediaSuspended = false
     var pendingInteractionState: Data?
     var lastActiveAt: Date
     @ObservationIgnored var onStateChange: (() -> Void)?
@@ -68,11 +69,27 @@ final class BrowserTab: Identifiable {
         observations = []
         webView?.uiDelegate = nil
         webView = nil
+        isMediaSuspended = false   // a freshly attached webview starts unsuspended
         isLoading = false
         progress = 0
         canGoBack = false
         canGoForward = false
         return state
+    }
+
+    /// Space membership changes only through TabManager.moveTab(_:toSpace:),
+    /// which removes the tab from any split group first (groups never span
+    /// spaces, spec §5.1).
+    func reassign(toSpace spaceID: String) { self.spaceID = spaceID }
+
+    /// Media suspension for panes leaving a visible split (spec §5.2) —
+    /// never triggered by plain tab switches. State-guarded: the webview
+    /// only hears actual transitions, so re-activating a never-suspended
+    /// pane is a no-op.
+    func setMediaSuspended(_ suspended: Bool) {
+        guard suspended != isMediaSuspended else { return }
+        isMediaSuspended = suspended
+        webView?.setAllMediaPlaybackSuspended(suspended)
     }
 
     func currentInteractionState() -> Data? {

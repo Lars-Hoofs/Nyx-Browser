@@ -26,6 +26,14 @@ final class SessionPersistence {
         }
         manager.restore(from: snapshot)
         manager.onStateChange = { [weak self] in self?.scheduleSave() }
+        // First consumer of the targeted write path: a hibernated tab's
+        // interactionState is written immediately rather than waiting for
+        // the next debounced full-session save (which may be up to ~2s
+        // away, or never arrive if the app is killed before then).
+        manager.onTabHibernated = { [weak self] tabID, state in
+            do { try self?.store.updateInteractionState(tabID: tabID, data: state) }
+            catch { NSLog("Nyx: interactionState write failed: %@", String(describing: error)) }
+        }
     }
 
     func scheduleSave() {

@@ -11,13 +11,12 @@ side by side — as a first-class citizen.
 
 ## Status
 
-Milestone M2 (tabs & persistence): sidebar tabs and spaces, GRDB session
-store with full restore after quit/crash, tab hibernation (MRU warm
-cache), popup adoption (`target="_blank"` opens a real tab), tab-aware
-menus. M1 delivered the skeleton: window, vibrancy sidebar, WKWebView,
-address field, shortcuts, offline UI smoke test.
+Milestone M3 (split view): flat split groups (up to 4 panes), context-menu
++ ⌥⌘S for split creation, pane focus ring, drag-divider resize (weights
+persist across quit). M1–M2 core shipped: tabs, spaces, session restore,
+hibernation, popups, menus.
 
-Next: M3 — split view (the core feature).
+Next: M4 — ⌘K launcher + searchable history.
 
 ## Build
 
