@@ -118,6 +118,25 @@ final class TabManager: NSObject {
     }
 
     func close(_ tab: BrowserTab) {
+        // Closing the SELECTED pane of a split must keep the survivors on
+        // screen. Ordering is load-bearing: hand selection to an adjacent
+        // surviving pane BEFORE removeFromSplit — the hop happens while
+        // the group is intact, so select()'s before/after visible layouts
+        // are identical (no suspension, no canvas flash), and the removal
+        // that follows diffs {whole group} → {survivors}, so
+        // finishGroupMutation suspends ONLY the closing tab (harmless —
+        // it is hibernated and deleted right below). Selecting after
+        // removal instead would diff {group} → {closing tab alone} and
+        // wrongly suspend + hide every survivor. Preference: the next
+        // pane in group order, else the previous one.
+        if selectedTabID == tab.id,
+           let group = splitGroup(containing: tab.id),
+           let paneIndex = group.tabIDs.firstIndex(of: tab.id) {
+            let survivorID = paneIndex + 1 < group.tabIDs.count
+                ? group.tabIDs[paneIndex + 1]
+                : group.tabIDs[paneIndex - 1]   // count ≥ 2, so index ≥ 1 here
+            select(tabID: survivorID)
+        }
         removeFromSplit(tab)   // closing a pane unsplits (spec §5.1)
         // hibernate() (not just detach) tears the webview down AND leaves
         // the captured interactionState in tab.pendingInteractionState —
@@ -195,6 +214,10 @@ final class TabManager: NSObject {
     /// user's space unless the moved tab was selected (selection follows
     /// its tab, matching select(_:)'s invariant).
     func moveTab(_ tab: BrowserTab, toSpace spaceID: String) {
+        guard isKnown(tab) else {
+            NSLog("Nyx: moveTab(toSpace:) ignored stale tab %@", tab.id)
+            return
+        }
         guard spaces.contains(where: { $0.id == spaceID }) else {
             NSLog("Nyx: moveTab ignored unknown space %@", spaceID)
             return
@@ -208,10 +231,22 @@ final class TabManager: NSObject {
 
     // MARK: - Split groups (spec §5.1)
 
+    /// Stale-reference guard (final review): callers hold BrowserTab
+    /// references that may outlive the tab's membership in `tabs` (e.g. a
+    /// context-menu closure firing after the tab was closed). Mutators
+    /// early-return on such references instead of resurrecting state.
+    private func isKnown(_ tab: BrowserTab) -> Bool {
+        tabs.contains { $0.id == tab.id }
+    }
+
     /// Groups `anchor` and `other` (max 4 panes; joining an existing group
     /// appends). No-op with a log if the cap would be exceeded or the tabs
     /// are in different spaces.
     func split(_ anchor: BrowserTab, with other: BrowserTab) {
+        guard isKnown(anchor), isKnown(other) else {
+            NSLog("Nyx: split ignored stale tab reference")
+            return
+        }
         guard anchor.id != other.id else { return }
         guard anchor.spaceID == other.spaceID else {
             NSLog("Nyx: split refused — tabs in different spaces")
@@ -285,6 +320,10 @@ final class TabManager: NSObject {
     /// with one member dissolves. Panes that thereby leave the visible
     /// split get their media suspended (spec §5.2).
     func removeFromSplit(_ tab: BrowserTab) {
+        guard isKnown(tab) else {
+            NSLog("Nyx: removeFromSplit ignored stale tab %@", tab.id)
+            return
+        }
         guard var group = splitGroup(containing: tab.id),
               let index = group.tabIDs.firstIndex(of: tab.id) else { return }
         let before = visibleLayout
@@ -312,6 +351,10 @@ final class TabManager: NSObject {
     /// Dissolves a whole group; every non-surviving pane (member that is
     /// no longer visible afterwards) gets its media suspended.
     func dissolveSplit(containing tab: BrowserTab) {
+        guard isKnown(tab) else {
+            NSLog("Nyx: dissolveSplit ignored stale tab %@", tab.id)
+            return
+        }
         guard let group = splitGroup(containing: tab.id) else { return }
         let before = visibleLayout
         splitGroups.removeAll { $0.id == group.id }
@@ -457,6 +500,37 @@ final class TabManager: NSObject {
                     weights: SplitWeights.sanitized(record.weights,
                                                     count: panes.count))
             }
+        // Persisted order can be non-contiguous (older builds, external DB
+        // edits) — re-establish the contiguity invariant here rather than
+        // resurrecting the violation into a session where split() assumes
+        // it holds. Sequential compaction is safe across groups: each pass
+        // moves only its own members as one block, inserted at the first
+        // member's position (all-non-member prefix), so it can never wedge
+        // itself between two adjacent members of an already-compacted group.
+        for group in splitGroups {
+            compactRestoredGroupContiguous(group.tabIDs)
+        }
+    }
+
+    /// Restore-side sibling of `compactGroupContiguous(inserting:)` (which
+    /// relocates exactly one newcomer and relies on the group already
+    /// being contiguous — untrue for arbitrary persisted data): gathers
+    /// ALL of a group's members, preserving their relative array order,
+    /// into one block at the first member's position. No-op when the run
+    /// is already contiguous. `group.tabIDs` pane order is untouched.
+    private func compactRestoredGroupContiguous(_ groupTabIDs: [String]) {
+        let memberSet = Set(groupTabIDs)
+        let memberIndices = tabs.indices.filter { memberSet.contains(tabs[$0].id) }
+        guard let first = memberIndices.first,
+              memberIndices != Array(first..<(first + memberIndices.count))
+        else { return }
+        let block = memberIndices.map { tabs[$0] }
+        var rest = tabs
+        rest.removeAll { memberSet.contains($0.id) }
+        // Everything before `first` is a non-member by definition, so the
+        // index survives the removal unchanged.
+        rest.insert(contentsOf: block, at: first)
+        tabs = rest
     }
 
     // MARK: - Lifecycle internals

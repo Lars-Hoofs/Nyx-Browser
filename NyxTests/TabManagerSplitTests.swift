@@ -1,6 +1,27 @@
 import XCTest
+import WebKit
 @testable import Nyx
 import NyxCore
+
+/// Same spy pattern as TabManagerMediaTests (that file's spy is private
+/// to it): records media-suspension calls so close-path tests can assert
+/// survivors of a split are never suspended.
+private final class CloseSpyWebView: WKWebView {
+    var recordedSuspensions: [Bool] = []
+
+    override func setAllMediaPlaybackSuspended(_ suspended: Bool,
+                                               completionHandler: (() -> Void)?) {
+        recordedSuspensions.append(suspended)
+        super.setAllMediaPlaybackSuspended(suspended, completionHandler: completionHandler)
+    }
+}
+
+@MainActor
+private final class CloseSpyWebViewFactory: WebViewFactory {
+    override func makeWebView(adopting configuration: WKWebViewConfiguration) -> WKWebView {
+        CloseSpyWebView(frame: .zero, configuration: configuration)
+    }
+}
 
 @MainActor
 final class TabManagerSplitTests: XCTestCase {
@@ -179,6 +200,74 @@ final class TabManagerSplitTests: XCTestCase {
         // a and c (still grouped) must stay adjacent; b (now plain) is
         // pushed out of the block rather than left wedged between them.
         XCTAssertEqual(manager.tabs(in: a.spaceID).map(\.id), [a.id, c.id, b.id])
+    }
+
+    /// Final-review Important #1: closing the SELECTED pane of a split
+    /// must keep the survivors on screen — selection hops to the adjacent
+    /// surviving pane (next in group order, else previous), NOT to
+    /// `remaining.last` of the space, and no survivor gets its media
+    /// suspended along the way.
+    func testCloseSelectedPaneKeepsSurvivorsVisibleAndUnsuspended() throws {
+        let manager = TabManager(factory: CloseSpyWebViewFactory(),
+                                 policy: TabLifecyclePolicy(warmLimit: 2))
+        let a = manager.newTab()
+        let b = manager.newTab()
+        let c = manager.newTab()
+        let d = manager.newTab()   // plain tab — the old `remaining.last` trap
+        manager.split(a, with: b)
+        manager.split(a, with: c)  // group [a, b, c]
+        manager.select(b)
+        manager.close(b)
+        // Preference: next pane in group order after b → c.
+        XCTAssertEqual(manager.selectedTabID, c.id)
+        XCTAssertEqual(manager.splitGroup(containing: a.id)?.tabIDs, [a.id, c.id])
+        XCTAssertEqual(Set(manager.visibleTabIDs), [a.id, c.id])
+        let suspensions = { (tab: BrowserTab) throws -> [Bool] in
+            try XCTUnwrap(tab.webView as? CloseSpyWebView).recordedSuspensions
+        }
+        XCTAssertEqual(try suspensions(a), [])   // survivors never suspended
+        XCTAssertEqual(try suspensions(c), [])
+        XCTAssertNotNil(manager.tabs.first { $0.id == d.id })   // untouched bystander
+    }
+
+    func testCloseSelectedLastPaneFallsBackToPreviousPane() {
+        let manager = makeManager()
+        let a = manager.newTab()
+        let b = manager.newTab()
+        let c = manager.newTab()
+        manager.newTab()           // plain trailing tab
+        manager.split(a, with: b)
+        manager.split(a, with: c)  // group [a, b, c]
+        manager.select(c)
+        manager.close(c)           // no next pane — previous (b) takes over
+        XCTAssertEqual(manager.selectedTabID, b.id)
+        XCTAssertEqual(manager.splitGroup(containing: a.id)?.tabIDs, [a.id, b.id])
+    }
+
+    /// Final-review minor: persisted non-contiguous member order must not
+    /// resurrect past the contiguity invariant on restore.
+    func testRestoreCompactsPersistedNonContiguousGroupMembers() {
+        let manager = makeManager()
+        let space = SpaceRecord(id: "s1", name: "S", orderIndex: 0)
+        func record(_ id: String, order: Int, group: String? = nil) -> TabRecord {
+            TabRecord(id: id, spaceID: "s1", urlString: "", title: "",
+                      orderIndex: order, interactionState: nil,
+                      lastActiveAt: Date(), splitGroupID: group)
+        }
+        let group = SplitGroupRecord(id: "g1", spaceID: "s1", orderIndex: 0,
+                                     weightsJSON: SplitGroupRecord.encodeWeights([0.5, 0.5]))
+        manager.restore(from: SessionSnapshot(
+            spaces: [space],
+            tabs: [record("a", order: 0, group: "g1"),
+                   record("x", order: 1),                 // wedged non-member
+                   record("c", order: 2, group: "g1"),
+                   record("y", order: 3)],
+            splitGroups: [group],
+            selectedSpaceID: "s1", selectedTabID: "a"))
+        XCTAssertEqual(manager.splitGroup(containing: "a")?.tabIDs, ["a", "c"])
+        // Members pulled into one block at the first member's position;
+        // non-members keep their relative order.
+        XCTAssertEqual(manager.tabs(in: "s1").map(\.id), ["a", "c", "x", "y"])
     }
 
     func testMoveTabToSpaceLeavesGroup() {

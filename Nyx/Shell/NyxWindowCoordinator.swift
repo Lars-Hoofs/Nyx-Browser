@@ -52,12 +52,35 @@ final class NyxWindowCoordinator {
             self.relayoutCanvas()
             let title = tab?.title ?? ""
             self.windowController.window?.title = title.isEmpty ? "Nyx" : title
+            // AFTER relayoutCanvas: the webview must already sit in the
+            // window's view hierarchy for makeFirstResponder to stick.
+            self.moveFirstResponderToFocusedPane(tab)
         }
         manager.onVisibleSetChange = { [weak self] in self?.relayoutCanvas() }
         canvas.onPaneClicked = { [weak self] in self?.manager.select(tabID: $0) }
         canvas.onWeightsCommitted = { [weak self] in
             self?.manager.updateWeights(groupID: $0, weights: $1)
         }
+    }
+
+    /// Keyboard focus follows pane focus (final review): switching panes
+    /// inside a visible split (⌥⌘←/→, pane click) must route key events to
+    /// the newly focused pane's webview, not leave them with the old one.
+    /// Scoped to splits only — a selected tab's group is always the
+    /// visible one, so a non-nil group means "in a visible split". Plain
+    /// tab switches keep AppKit's own focus behavior (e.g. an address
+    /// field focus in flight must not be stolen). Skips when the current
+    /// first responder already is (or sits inside) the target webview —
+    /// WebKit parks focus on an internal content view, so an identity
+    /// check alone would re-steal focus on every callback.
+    private func moveFirstResponderToFocusedPane(_ tab: BrowserTab?) {
+        guard let tab,
+              manager.splitGroup(containing: tab.id) != nil,
+              let webView = tab.webView,
+              let window = windowController.window else { return }
+        if let responder = window.firstResponder as? NSView,
+           responder === webView || responder.isDescendant(of: webView) { return }
+        window.makeFirstResponder(webView)
     }
 
     /// Rebuilds the canvas from the manager's visible set. The canvas may

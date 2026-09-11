@@ -4,9 +4,9 @@
 import Foundation
 import GRDB
 
-/// Persistent session records (spec §4). IDs are UUID strings; a
-/// SessionItem/SplitGroup layer arrives in M3 — the flat tab list with
-/// orderIndex is forward-compatible with it.
+/// Persistent session records (spec §4). IDs are UUID strings. The
+/// SplitGroup layer shipped in M3: SplitGroupRecord rows plus
+/// TabRecord.splitGroupID, layered over the flat orderIndex tab list.
 public struct SpaceRecord: Codable, Equatable, Identifiable,
                            FetchableRecord, PersistableRecord {
     public static let databaseTableName = "space"
