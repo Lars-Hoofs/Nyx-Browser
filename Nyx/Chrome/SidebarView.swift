@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// M2 sidebar: address field + tab rows for the selected space + new-tab
-/// button. Space switcher and reorder arrive in Task 10; night-glass
-/// polish is M8 — styling stays on DesignTokens-level restraint.
+/// M2 sidebar: space switcher + address field + drag-reorderable tab rows
+/// for the selected space + new-tab button. Night-glass polish is M8 —
+/// styling stays on DesignTokens-level restraint.
 struct SidebarView: View {
     @Bindable var manager: TabManager
 
@@ -17,6 +17,8 @@ struct SidebarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Spacer().frame(height: 30)
+
+            spaceSwitcher
 
             navigationControls
 
@@ -42,6 +44,54 @@ struct SidebarView: View {
         .onChange(of: manager.addressFocusToken) { _, _ in
             addressFocused = true
         }
+    }
+
+    private var spaceSwitcher: some View {
+        Menu {
+            ForEach(manager.spaces) { space in
+                Button {
+                    manager.selectedSpaceID = space.id
+                    if let first = manager.tabs(in: space.id).first {
+                        manager.select(first)
+                    } else {
+                        // Empty space: newTab() both creates and selects,
+                        // so the user is never stranded with a nil
+                        // selection (Task 9 review — reachable via this
+                        // switcher's switch-to-empty-space path).
+                        manager.newTab()
+                    }
+                } label: {
+                    if space.id == manager.selectedSpaceID {
+                        Label(space.name, systemImage: "checkmark")
+                    } else {
+                        Text(space.name)
+                    }
+                }
+            }
+            Divider()
+            Button("New Space") {
+                manager.newSpace(named: "Space \(manager.spaces.count + 1)")
+                manager.newTab()
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(selectedSpaceName)
+                    .font(.system(size: 11, weight: .semibold))
+                    .textCase(.uppercase)
+                    .kerning(0.8)
+                    .foregroundStyle(.secondary)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityIdentifier("nyx.spaceSwitcher")
+    }
+
+    private var selectedSpaceName: String {
+        manager.spaces.first { $0.id == manager.selectedSpaceID }?.name ?? "Space"
     }
 
     private var navigationControls: some View {
@@ -90,6 +140,12 @@ struct SidebarView: View {
                 TabRow(tab: tab) { manager.close(tab) }
                     .tag(tab.id)
                     .accessibilityIdentifier("nyx.tabRow")
+            }
+            .onMove { offsets, destination in
+                if let spaceID = manager.selectedSpaceID {
+                    manager.moveTab(fromOffsets: offsets, toOffset: destination,
+                                    in: spaceID)
+                }
             }
         }
         .listStyle(.sidebar)

@@ -86,7 +86,7 @@ final class NyxWindowCoordinator {
     /// Test hook (offline UI tests): load inline HTML into the selected tab.
     func loadTestHTML(_ html: String) {
         guard let tab = manager.selectedTab else { return }
-        if tab.webView == nil { manager.select(tab) }
+        // Selection is always activated by restore/bootstrap before this runs.
         tab.webView?.loadHTMLString(html, baseURL: nil)
     }
     #endif
