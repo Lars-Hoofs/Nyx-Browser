@@ -66,18 +66,38 @@ final class HistoryRecorderTests: XCTestCase {
         recorder.wire(tab)
         let url = URL(string: "https://example.com")!
         tab.onNavigationCommitted?(url)
-        tab.urlString = url.absoluteString
-        tab.onTitleChangedForHistory?("Example Domain")
+        tab.onTitleChangedForHistory?(url, "Example Domain")
         let recent = try store.recent(limit: 10)
         XCTAssertEqual(recent.first?.url, url.absoluteString)
         XCTAssertEqual(recent.first?.title, "Example Domain")
     }
 
-    func testWiredTitleChangeIgnoredWhenCurrentURLNotRecordable() throws {
+    func testWiredTitleChangeIgnoredWhenDeliveredURLNotRecordable() throws {
         let tab = BrowserTab(spaceID: "s1")
         recorder.wire(tab)
-        tab.urlString = "about:blank"
-        tab.onTitleChangedForHistory?("Ignored")
+        tab.onTitleChangedForHistory?(URL(string: "about:blank")!, "Ignored")
         XCTAssertTrue(try store.recent(limit: 10).isEmpty)
+    }
+
+    /// Race regression: a title event for the PREVIOUS page in a tab,
+    /// still in flight when the tab has already navigated on to a new
+    /// URL, must enrich the OLD url's row — never the new one. The
+    /// callback is keyed on the URL delivered alongside the title (its own
+    /// KVO-synchronous capture), not on the tab's current `urlString`,
+    /// which by this point already reads the new page.
+    func testWiredTitleChangeUsesDeliveredURLNotTabsCurrentURLString() throws {
+        let tab = BrowserTab(spaceID: "s1")
+        recorder.wire(tab)
+        let urlA = URL(string: "https://a.example.com")!
+        let urlB = URL(string: "https://b.example.com")!
+        tab.onNavigationCommitted?(urlA)
+        tab.onNavigationCommitted?(urlB)
+        tab.urlString = urlB.absoluteString   // tab has already moved on to B
+        tab.onTitleChangedForHistory?(urlA, "Title A")   // late title, still for A
+        let recent = try store.recent(limit: 10)
+        let entryA = recent.first { $0.url == urlA.absoluteString }
+        let entryB = recent.first { $0.url == urlB.absoluteString }
+        XCTAssertEqual(entryA?.title, "Title A")
+        XCTAssertEqual(entryB?.title, "")
     }
 }

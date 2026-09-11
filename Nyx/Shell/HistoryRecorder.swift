@@ -34,14 +34,18 @@ final class HistoryRecorder {
                       url.absoluteString, String(describing: error))
             }
         }
-        tab.onTitleChangedForHistory = { [weak self, weak tab] title in
-            guard let self, let tab,
-                  let url = URL(string: tab.urlString), Self.isRecordable(url) else { return }
+        tab.onTitleChangedForHistory = { [weak self] url, title in
+            // The URL comes from BrowserTab's KVO-synchronous capture, not
+            // tab.urlString (which advances via its own, independently
+            // scheduled Task) — using it directly is what keeps a title
+            // event from ever landing on the wrong row across a fast
+            // same-tab renavigation.
+            guard let self, Self.isRecordable(url) else { return }
             do {
-                try self.store.updateTitle(url: tab.urlString, title: title)
+                try self.store.updateTitle(url: url.absoluteString, title: title)
             } catch {
                 NSLog("Nyx: history updateTitle failed for %@: %@",
-                      tab.urlString, String(describing: error))
+                      url.absoluteString, String(describing: error))
             }
         }
     }

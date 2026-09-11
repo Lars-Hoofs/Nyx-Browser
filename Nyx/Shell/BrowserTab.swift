@@ -25,10 +25,17 @@ final class BrowserTab: Identifiable {
     /// didCommit (M4 spec §7: navigation-committed history recording).
     /// Wired by HistoryRecorder, not persistence.
     @ObservationIgnored var onNavigationCommitted: ((URL) -> Void)?
-    /// Fired with the new title whenever it changes — a dedicated slot so
-    /// HistoryRecorder's title enrichment never piggybacks persistence's
-    /// onStateChange.
-    @ObservationIgnored var onTitleChangedForHistory: ((String) -> Void)?
+    /// Fired with the URL the new title belongs to and the title itself,
+    /// whenever it changes — a dedicated slot so HistoryRecorder's title
+    /// enrichment never piggybacks persistence's onStateChange. The URL is
+    /// captured synchronously alongside the title read (see
+    /// bindObservations) rather than read back from `urlString` inside the
+    /// callback: `urlString` is updated by its own independently-scheduled
+    /// Task, so a title event racing a same-tab renavigation could
+    /// otherwise deliver a title against whatever URL happens to have
+    /// landed by the time the callback runs — misattributing it to the
+    /// wrong history row.
+    @ObservationIgnored var onTitleChangedForHistory: ((URL, String) -> Void)?
 
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private var navigationRelay: NavigationRelay?
@@ -131,12 +138,19 @@ final class BrowserTab: Identifiable {
             },
             webView.observe(\.title, options: [.initial, .new]) { [weak self] webView, _ in
                 let value = webView.title ?? ""
+                // Read alongside the title, synchronously, OUTSIDE the
+                // Task — same discipline as the value read above: the URL
+                // this title belongs to is a property of THIS KVO
+                // notification, not whatever `urlString` reads later.
+                let titleURL = webView.url
                 Task { @MainActor [weak webView] in
                     guard let self, let webView, self.webView === webView else { return }
                     guard self.title != value else { return }
                     self.title = value
                     self.onStateChange?()
-                    self.onTitleChangedForHistory?(value)
+                    if let titleURL {
+                        self.onTitleChangedForHistory?(titleURL, value)
+                    }
                 }
             },
             webView.observe(\.canGoBack, options: [.initial, .new]) { [weak self] webView, _ in
