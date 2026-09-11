@@ -71,6 +71,35 @@ final class LauncherRankerTests: XCTestCase {
         XCTAssertFalse(results.contains(.switchToTab(nonMatching)))
     }
 
+    func testTabURLPrefixBeatsTabTitleSubstring() {
+        // url-prefix (tier 1) must outrank title-substring (tier 2).
+        let urlPrefixTab = tab("t1", "Server", "localhost:3000/app")
+        let titleSubstringTab = tab("t2", "My Localhost Server", "https://example.com/app")
+        let results = ranker.results(query: "localhost", openTabs: [titleSubstringTab, urlPrefixTab],
+                                     history: [], commands: [], limit: 10)
+        let tabResults = results.compactMap { result -> LauncherTabInfo? in
+            if case .switchToTab(let info) = result { return info }
+            return nil
+        }
+        XCTAssertEqual(tabResults, [urlPrefixTab, titleSubstringTab],
+                       "a url-prefix match must rank above a title-substring match")
+    }
+
+    func testSameTierTabMatchesPreserveInputOrder() {
+        // Both tabs are title-prefix matches (same tier); the tie-break
+        // must preserve the order they were passed in, not re-sort them.
+        let tabA = tab("a", "GitHub Alpha", "https://alpha.example.com")
+        let tabB = tab("b", "GitHub Beta", "https://beta.example.com")
+        let results = ranker.results(query: "github", openTabs: [tabB, tabA],
+                                     history: [], commands: [], limit: 10)
+        let tabResults = results.compactMap { result -> LauncherTabInfo? in
+            if case .switchToTab(let info) = result { return info }
+            return nil
+        }
+        XCTAssertEqual(tabResults, [tabB, tabA],
+                       "same-tier matches must preserve the given input order")
+    }
+
     // MARK: - openURL derivation
 
     func testURLParseableQueryYieldsOpenURLAboveHistory() {
@@ -90,6 +119,19 @@ final class LauncherRankerTests: XCTestCase {
         XCTAssertFalse(results.contains { if case .openURL = $0 { return true }; return false },
                        "a query that AddressParser resolves to a DuckDuckGo search URL must not surface as openURL")
         XCTAssertEqual(results.last, .searchWeb("swift"))
+    }
+
+    func testAnyQueryParsingToDuckDuckGoHostHasNoOpenURL() {
+        // AddressParser's bare-host rule actually resolves this to a real
+        // https://duckduckgo.com/settings destination, not a search — but
+        // the ranker's host-based discrimination can't tell the two apart
+        // and withholds openURL for any duckduckgo.com host, a wider scope
+        // than just the literal bare-domain "duckduckgo.com" query. Pinning
+        // the actual (wider) behavior so it can't silently narrow or widen.
+        let results = ranker.results(query: "duckduckgo.com/settings", openTabs: [], history: [],
+                                     commands: [], limit: 10)
+        XCTAssertFalse(results.contains { if case .openURL = $0 { return true }; return false })
+        XCTAssertEqual(results.last, .searchWeb("duckduckgo.com/settings"))
     }
 
     // MARK: - commands
@@ -143,9 +185,12 @@ final class LauncherRankerTests: XCTestCase {
         XCTAssertTrue(results.contains(.command(.splitWithNextTab)))
     }
 
-    // MARK: - dedupe (history url == open tab url -> tab wins)
+    // MARK: - dedupe (history url == open tab url -> convert to tab switch)
 
-    func testHistoryEntryDuplicatingOpenTabURLIsDropped() {
+    func testHistoryEntryDuplicatingAlreadyMatchedTabURLIsDroppedNotDuplicated() {
+        // The tab itself already matches the query and is emitted as a tab
+        // match, so the history entry for the same url must be dropped
+        // (not also converted) to avoid a duplicate switchToTab.
         let sharedURL = "https://example.com"
         let t = tab("t1", "Example Site", "https://example.com")
         let h = entry(sharedURL, "Example Site")
@@ -153,14 +198,42 @@ final class LauncherRankerTests: XCTestCase {
         let results = ranker.results(query: "example", openTabs: [t], history: [h, otherHistory],
                                      commands: [], limit: 10)
         XCTAssertFalse(results.contains(.history(h)))
-        XCTAssertTrue(results.contains(.switchToTab(t)))
+        XCTAssertEqual(results.filter { $0 == .switchToTab(t) }.count, 1,
+                       "the tab must appear exactly once, not once as a tab match and again from history")
     }
 
     func testHistoryEntryDuplicatingOpenTabURLDroppedOnEmptyQueryToo() {
+        // On the empty-query shape every open tab is already emitted, so a
+        // history entry sharing its url is always the "already shown" case.
         let sharedURL = "https://example.com"
         let t = tab("t1", "Example Site", "https://example.com")
         let h = entry(sharedURL, "Example Site")
         let results = ranker.results(query: "", openTabs: [t], history: [h], commands: [], limit: 10)
         XCTAssertEqual(results, [.switchToTab(t)])
+    }
+
+    func testHistoryEntryForUnmatchedTabURLConvertsToSwitchToTab() {
+        // IMPORTANT regression: a tab whose title doesn't itself match the
+        // query (so it's absent from the tab-match list) must still surface
+        // as a tab switch when a history entry for its url matched on
+        // richer text (e.g. FTS matched the history title). Dropping the
+        // history entry here would make the result vanish entirely.
+        let x = "https://project.example.com"
+        let unmatchedTab = tab("t1", "localhost:3000", x)
+        let richerHistory = entry(x, "My Cool Project")
+        let results = ranker.results(query: "cool", openTabs: [unmatchedTab], history: [richerHistory],
+                                     commands: [], limit: 10)
+        XCTAssertEqual(results.filter { $0 == .switchToTab(unmatchedTab) }.count, 1,
+                       "must contain exactly one switchToTab for the shared url")
+        XCTAssertFalse(results.contains(.history(richerHistory)))
+    }
+
+    func testDedupeURLComparisonIsCaseInsensitive() {
+        let t = tab("t1", "Example Site", "https://Example.com/Page")
+        let h = entry("https://example.com/page", "Example Page")
+        let results = ranker.results(query: "example", openTabs: [t], history: [h],
+                                     commands: [], limit: 10)
+        XCTAssertFalse(results.contains(.history(h)))
+        XCTAssertEqual(results.filter { $0 == .switchToTab(t) }.count, 1)
     }
 }
