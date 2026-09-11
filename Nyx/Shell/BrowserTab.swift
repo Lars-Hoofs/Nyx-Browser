@@ -17,6 +17,7 @@ final class BrowserTab: Identifiable {
     var canGoBack = false
     var canGoForward = false
     private(set) var webView: WKWebView?
+    private(set) var isMediaSuspended = false
     var pendingInteractionState: Data?
     var lastActiveAt: Date
     @ObservationIgnored var onStateChange: (() -> Void)?
@@ -68,6 +69,7 @@ final class BrowserTab: Identifiable {
         observations = []
         webView?.uiDelegate = nil
         webView = nil
+        isMediaSuspended = false   // a freshly attached webview starts unsuspended
         isLoading = false
         progress = 0
         canGoBack = false
@@ -81,8 +83,12 @@ final class BrowserTab: Identifiable {
     func reassign(toSpace spaceID: String) { self.spaceID = spaceID }
 
     /// Media suspension for panes leaving a visible split (spec §5.2) —
-    /// never called on plain tab switches.
+    /// never triggered by plain tab switches. State-guarded: the webview
+    /// only hears actual transitions, so re-activating a never-suspended
+    /// pane is a no-op.
     func setMediaSuspended(_ suspended: Bool) {
+        guard suspended != isMediaSuspended else { return }
+        isMediaSuspended = suspended
         webView?.setAllMediaPlaybackSuspended(suspended)
     }
 

@@ -82,6 +82,59 @@ final class TabManagerSplitTests: XCTestCase {
         XCTAssertTrue(manager.splitGroups.isEmpty)
     }
 
+    func testWeightsFollowTabsThroughRestoreWhenPaneOrderDiffers() {
+        let manager = makeManager()
+        let a = manager.newTab()
+        let b = manager.newTab()
+        manager.split(b, with: a)      // pane order [b, a] ≠ sidebar order [a, b]
+        manager.updateWeights(groupID: manager.splitGroups[0].id,
+                              weights: [0.7, 0.3])   // b → 0.7, a → 0.3
+        let before = weightsByTab(manager.splitGroups[0])
+        XCTAssertEqual(before[b.id] ?? -1, 0.7, accuracy: 0.0001)
+        let second = makeManager()
+        second.restore(from: manager.snapshotForSaving())
+        XCTAssertEqual(second.splitGroups.count, 1)
+        let after = weightsByTab(second.splitGroups[0])
+        XCTAssertEqual(after[a.id] ?? -1, before[a.id] ?? -2, accuracy: 0.0001)
+        XCTAssertEqual(after[b.id] ?? -1, before[b.id] ?? -2, accuracy: 0.0001)
+    }
+
+    private func weightsByTab(_ group: TabManager.RuntimeSplitGroup) -> [String: Double] {
+        Dictionary(uniqueKeysWithValues: zip(group.tabIDs, group.weights))
+    }
+
+    func testSplitAcrossSpacesRefused() {
+        let manager = makeManager()
+        let a = manager.newTab()
+        manager.newSpace(named: "Two")
+        let b = manager.newTab()       // lives in the new space
+        manager.split(a, with: b)
+        XCTAssertTrue(manager.splitGroups.isEmpty)
+    }
+
+    func testSplitWithAlreadyGroupedTabRefused() {
+        let manager = makeManager()
+        let a = manager.newTab()
+        let b = manager.newTab()
+        let c = manager.newTab()
+        manager.split(a, with: b)
+        let groupsBefore = manager.splitGroups
+        manager.split(c, with: b)      // `other` already grouped → no change
+        XCTAssertEqual(manager.splitGroups, groupsBefore)
+        XCTAssertNil(manager.splitGroup(containing: c.id))
+    }
+
+    func testUpdateWeightsWrongLengthResetsToEqual() {
+        let manager = makeManager()
+        let a = manager.newTab()
+        let b = manager.newTab()
+        manager.split(a, with: b)
+        let groupID = manager.splitGroups[0].id
+        manager.updateWeights(groupID: groupID, weights: [0.7, 0.3])
+        manager.updateWeights(groupID: groupID, weights: [0.2, 0.3, 0.5])   // wrong length
+        XCTAssertEqual(manager.splitGroups[0].weights, [0.5, 0.5])
+    }
+
     func testMoveTabToSpaceLeavesGroup() {
         let manager = makeManager()
         let a = manager.newTab()

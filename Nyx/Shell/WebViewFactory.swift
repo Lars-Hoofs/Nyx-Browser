@@ -2,9 +2,10 @@ import WebKit
 
 /// Builds WKWebViews per spec §5.3: one shared website data store,
 /// a per-tab WKUserContentController (required for per-tab adblock in M5),
-/// Safari-identical UA.
+/// Safari-identical UA. Not final: NyxTests subclasses it to inject spy
+/// webviews (the media-suspension seam).
 @MainActor
-final class WebViewFactory {
+class WebViewFactory {
     static let shared = WebViewFactory()
 
     func makeWebView() -> WKWebView {

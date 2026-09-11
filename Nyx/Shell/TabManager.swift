@@ -21,14 +21,17 @@ final class TabManager: NSObject {
     private(set) var spaces: [SpaceRecord] = []
     private(set) var tabs: [BrowserTab] = []
     private(set) var splitGroups: [RuntimeSplitGroup] = []
-    var selectedSpaceID: String?
+    private(set) var selectedSpaceID: String?
     private(set) var selectedTabID: String?
     var addressFocusToken = 0
 
     @ObservationIgnored var onStateChange: (() -> Void)?
     @ObservationIgnored var onSelectionChange: ((BrowserTab?) -> Void)?
-    /// Canvas re-layout trigger: fires whenever `visibleTabIDs` or a
-    /// group's weights change. `onSelectionChange` semantics are unchanged.
+    /// Canvas re-layout trigger: fires only when a change actually altered
+    /// the visible pane layout — the visible tab set or its weights.
+    /// Mutations to non-visible groups and focus moves within a group fire
+    /// `onStateChange`/`onSelectionChange` only. `onSelectionChange`
+    /// semantics are unchanged.
     @ObservationIgnored var onVisibleSetChange: (() -> Void)?
 
     @ObservationIgnored private let factory: WebViewFactory
@@ -64,6 +67,22 @@ final class TabManager: NSObject {
     /// All tabs that must stay live: every visible pane — the selected
     /// tab's whole split group (spec §5.2).
     var pinnedTabIDs: Set<String> { Set(visibleTabIDs) }
+
+    /// What the pane canvas actually renders: the visible tab set plus its
+    /// weights. Compared before/after mutations to keep onVisibleSetChange
+    /// honest.
+    private struct VisibleLayout: Equatable {
+        var tabIDs: [String]
+        var weights: [Double]
+    }
+
+    private var visibleLayout: VisibleLayout {
+        guard let selectedTabID else { return VisibleLayout(tabIDs: [], weights: []) }
+        if let group = splitGroup(containing: selectedTabID) {
+            return VisibleLayout(tabIDs: group.tabIDs, weights: group.weights)
+        }
+        return VisibleLayout(tabIDs: [selectedTabID], weights: [1.0])
+    }
 
     func tabs(in spaceID: String) -> [BrowserTab] {
         tabs.filter { $0.spaceID == spaceID }
@@ -109,7 +128,7 @@ final class TabManager: NSObject {
 
     func select(_ tab: BrowserTab) {
         guard selectedTabID != tab.id else { return }
-        let visibleBefore = visibleTabIDs
+        let before = visibleLayout
         selectedTabID = tab.id
         selectedSpaceID = tab.spaceID
         tab.lastActiveAt = Date()
@@ -117,7 +136,7 @@ final class TabManager: NSObject {
         enforcePolicy()
         // A plain switch never suspends media (spec §5.2 suspends only on
         // panes leaving a visible split — see removeFromSplit/dissolveSplit).
-        if visibleBefore != visibleTabIDs { onVisibleSetChange?() }
+        if before != visibleLayout { onVisibleSetChange?() }
         onSelectionChange?(tab)
         onStateChange?()
     }
@@ -184,6 +203,7 @@ final class TabManager: NSObject {
             NSLog("Nyx: split refused — tab already in a group")
             return
         }
+        let before = visibleLayout
         if var group = splitGroup(containing: anchor.id) {
             guard group.tabIDs.count < 4 else {
                 NSLog("Nyx: split cap (4) reached")
@@ -198,10 +218,7 @@ final class TabManager: NSObject {
                 tabIDs: [anchor.id, other.id],
                 weights: SplitWeights.equal(count: 2)))
         }
-        activateVisibleSet()
-        enforcePolicy()
-        onVisibleSetChange?()
-        onStateChange?()
+        finishGroupMutation(before: before)
     }
 
     /// Removes a tab from its group, redistributing weights; a group left
@@ -210,7 +227,7 @@ final class TabManager: NSObject {
     func removeFromSplit(_ tab: BrowserTab) {
         guard var group = splitGroup(containing: tab.id),
               let index = group.tabIDs.firstIndex(of: tab.id) else { return }
-        let visibleBefore = visibleTabIDs
+        let before = visibleLayout
         group.tabIDs.remove(at: index)
         group.weights = SplitWeights.removing(index: index, from: group.weights)
         if group.tabIDs.count < 2 {
@@ -218,16 +235,16 @@ final class TabManager: NSObject {
         } else {
             replaceGroup(group)
         }
-        finishGroupMutation(visibleBefore: visibleBefore)
+        finishGroupMutation(before: before)
     }
 
     /// Dissolves a whole group; every non-surviving pane (member that is
     /// no longer visible afterwards) gets its media suspended.
     func dissolveSplit(containing tab: BrowserTab) {
         guard let group = splitGroup(containing: tab.id) else { return }
-        let visibleBefore = visibleTabIDs
+        let before = visibleLayout
         splitGroups.removeAll { $0.id == group.id }
-        finishGroupMutation(visibleBefore: visibleBefore)
+        finishGroupMutation(before: before)
     }
 
     /// Commits divider weights (once, on drag end — spec §5.1). Input is
@@ -237,11 +254,17 @@ final class TabManager: NSObject {
             NSLog("Nyx: updateWeights ignored unknown group %@", groupID)
             return
         }
-        let sanitized = SplitWeights.sanitized(weights,
-                                               count: splitGroups[index].tabIDs.count)
+        let paneCount = splitGroups[index].tabIDs.count
+        if weights.count != paneCount
+            || !weights.allSatisfy({ $0.isFinite && $0 > 0 }) {
+            NSLog("Nyx: updateWeights rejected invalid input (%ld values for %ld panes) — resetting to equal",
+                  weights.count, paneCount)
+        }
+        let sanitized = SplitWeights.sanitized(weights, count: paneCount)
         guard splitGroups[index].weights != sanitized else { return }
+        let before = visibleLayout
         splitGroups[index].weights = sanitized
-        onVisibleSetChange?()
+        if before != visibleLayout { onVisibleSetChange?() }
         onStateChange?()
     }
 
@@ -251,18 +274,20 @@ final class TabManager: NSObject {
         splitGroups[index] = group
     }
 
-    /// Shared tail of the structural group mutations (remove/dissolve):
+    /// Shared tail of the group mutations (split/remove/dissolve):
     /// suspends media on panes that left the visible split — the ONLY
     /// place media suspension happens, never on plain tab switches — then
     /// reconciles webview lifecycle and fires the change callbacks.
-    private func finishGroupMutation(visibleBefore: [String]) {
-        let visibleAfter = Set(visibleTabIDs)
-        for id in Set(visibleBefore).subtracting(visibleAfter) {
+    /// `onVisibleSetChange` fires only when the visible layout (tab set or
+    /// weights) actually changed; `onStateChange` always fires.
+    private func finishGroupMutation(before: VisibleLayout) {
+        let after = visibleLayout
+        for id in Set(before.tabIDs).subtracting(after.tabIDs) {
             tabs.first { $0.id == id }?.setMediaSuspended(true)
         }
         activateVisibleSet()
         enforcePolicy()
-        onVisibleSetChange?()
+        if before != after { onVisibleSetChange?() }
         onStateChange?()
     }
 
@@ -312,11 +337,18 @@ final class TabManager: NSObject {
         var groupRecords: [SplitGroupRecord] = []
         var membership: [String: String] = [:]   // tabID → groupID
         for (index, group) in splitGroups.enumerated() {
-            guard let spaceID = tabs.first(where: { group.tabIDs.contains($0.id) })?
-                .spaceID else { continue }
+            let members = tabs.filter { group.tabIDs.contains($0.id) }
+            guard let spaceID = members.first?.spaceID else { continue }
+            // Weights are positional, and restore rebuilds membership in
+            // sidebar (tab orderIndex) order — so persist the weights
+            // permuted into that same order, or a group whose pane order
+            // differs from sidebar order would swap weights on relaunch.
+            let sidebarOrderedWeights = members.map(\.id).compactMap { id in
+                group.tabIDs.firstIndex(of: id).map { group.weights[$0] }
+            }
             groupRecords.append(SplitGroupRecord(
                 id: group.id, spaceID: spaceID, orderIndex: index,
-                weightsJSON: SplitGroupRecord.encodeWeights(group.weights)))
+                weightsJSON: SplitGroupRecord.encodeWeights(sidebarOrderedWeights)))
             for tabID in group.tabIDs { membership[tabID] = group.id }
         }
         var ordered: [TabRecord] = []
