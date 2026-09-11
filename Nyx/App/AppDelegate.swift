@@ -14,11 +14,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             coordinator.start()
 
             #if DEBUG
+            // Task 8: applied BEFORE anything else touches the toggle, so
+            // a leftover value from an earlier UITest run in this same
+            // bundle's UserDefaults domain (per-bundle, NOT per-db-name —
+            // see NyxSettings' doc) never leaks into a test that needs a
+            // known starting state.
+            if ProcessInfo.processInfo.arguments.contains("-nyx-reset-adblock-state") {
+                coordinator.settings.adblockEnabled = true
+            }
             if let testHTML = testHTMLLaunchArgument() {
                 coordinator.loadTestHTML(testHTML)
             }
             if let seed = seedHistoryLaunchArgument() {
                 coordinator.seedHistory(url: seed.url, title: seed.title)
+            }
+            if let dumpPath = dumpAdblockStateLaunchArgument() {
+                dumpAdblockState(to: dumpPath, coordinator: coordinator)
             }
             #endif
         } catch {
@@ -75,6 +86,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let url = String(value[value.startIndex..<separatorIndex])
         let title = String(value[value.index(after: separatorIndex)...])
         return (url, title)
+    }
+
+    /// Task 8: `-nyx-dump-adblock-state <path>` — pre-authorized fallback
+    /// for reading adblock state in UI tests. XCUITest's read of an
+    /// `NSMenuItem`'s checkmark `state` is documented (global-
+    /// constraints.md's flake note; M3-T11's report) as flaky on this
+    /// SDK for other AX surfaces, and the menu items here only validate
+    /// (and thus set `.state`) while their menu is actually open — so
+    /// rather than gamble on that path, this writes the coordinator's
+    /// OWN state directly to a file inside the app's sandbox container,
+    /// which the (unsandboxed) UI-test runner can read straight back,
+    /// exactly like `tearDownWithError`'s direct container access.
+    private func dumpAdblockStateLaunchArgument() -> String? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let flagIndex = args.firstIndex(of: "-nyx-dump-adblock-state"),
+              args.index(after: flagIndex) < args.count else { return nil }
+        return args[args.index(after: flagIndex)]
+    }
+
+    /// Writes `key=value` lines covering both the global toggle and the
+    /// per-site gate/checkmark, so one dump mechanism serves both new UI
+    /// tests. Best-effort (`try?`) — a failed dump fails the reading test
+    /// via a missing file, never the app.
+    private func dumpAdblockState(to path: String, coordinator: NyxWindowCoordinator) {
+        let url = URL(fileURLWithPath: path)
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let contents = """
+        global=\(coordinator.adblockEnabled)
+        canToggleSite=\(coordinator.canToggleSiteAdblock)
+        siteEnabled=\(coordinator.siteAdblockEnabled)
+
+        """
+        try? contents.write(to: url, atomically: true, encoding: .utf8)
     }
     #endif
 }
