@@ -16,7 +16,10 @@ Milestone M3 (split view): flat split groups (up to 4 panes), context-menu
 persist across quit). M1–M2 core shipped: tabs, spaces, session restore,
 hibernation, popups, menus.
 
-Next: M4 — ⌘K launcher + searchable history.
+Milestone M4 (launcher & history): ⌘K launcher with tabs/history/commands
+and URL fallthrough, FTS5 history with frecency ranking.
+
+Next: M5 — adblock.
 
 ## Build
 
