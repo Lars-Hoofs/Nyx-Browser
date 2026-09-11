@@ -165,14 +165,27 @@ public final class HistoryStore {
     /// whitespace-separated token in `query` (implicit AND between
     /// tokens), so "gith" finds "github.com" and "swift prog" finds
     /// "Swift Programming". Non-alphanumeric characters are stripped from
-    /// each token before the trailing `*` is appended, both to keep FTS5
-    /// query syntax from choking on stray punctuation and because the
-    /// unicode61 tokenizer already splits on it (e.g. "github.com" tokenizes
-    /// to "github", "com").
+    /// each token before it's quoted, both to keep FTS5 query syntax from
+    /// choking on stray punctuation and because the unicode61 tokenizer
+    /// already splits on it (e.g. "github.com" tokenizes to "github", "com").
+    ///
+    /// Every token is double-quoted before the trailing `*` (`"token"*`
+    /// rather than bare `token*`): FTS5 treats unquoted uppercase `AND`,
+    /// `OR`, and `NOT` as query operators, not literal terms, so a search
+    /// for e.g. "Terms AND Conditions" would otherwise throw `fts5: syntax
+    /// error` on the bare `AND` token. Quoting forces every token to be
+    /// treated as a literal string regardless of casing. Embedded double
+    /// quotes are doubled (`"` -> `""`, FTS5's own escaping convention) so
+    /// a token can't break out of its quoted string — the alphanumeric
+    /// split above already makes this unreachable today, but it's cheap
+    /// insurance against a future change to the tokenization.
     private static func ftsPrefixPattern(for query: String) -> String? {
         let tokens = query
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-            .map { "\($0)*" }
+            .map { token -> String in
+                let escaped = token.replacingOccurrences(of: "\"", with: "\"\"")
+                return "\"\(escaped)\"*"
+            }
         guard !tokens.isEmpty else { return nil }
         return tokens.joined(separator: " ")
     }

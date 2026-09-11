@@ -69,6 +69,13 @@ public final class NyxDatabase {
         // is an ordinary (non-`WITHOUT ROWID`) table and always has one.
         // No autoincrement id column was needed; recorded here per the
         // brief's instruction to note the adaptation either way.
+        //
+        // Caveat: relying on the implicit rowid means anything that could
+        // renumber it (e.g. a future VACUUM/"compact database" feature)
+        // would need to re-verify this join — only HistoryStore.search()'s
+        // history_fts.rowid == history_entry.rowid join depends on it
+        // today; every other HistoryStore path is keyed by `url`, so it's
+        // unaffected. Revisit this note before adding such a feature.
         migrator.registerMigration("v3") { db in
             try db.create(table: "history_entry") { t in
                 t.column("url", .text).primaryKey()

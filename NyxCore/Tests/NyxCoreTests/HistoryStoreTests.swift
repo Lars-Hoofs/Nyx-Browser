@@ -123,6 +123,59 @@ final class HistoryStoreTests: XCTestCase {
                        "and a recent-but-rare entry when text relevance is tied")
     }
 
+    func testSearchAdversarialTokensDoNotThrow() throws {
+        try store.recordVisit(url: "https://legal.example.com/terms",
+                               title: "Terms and Conditions", at: Date())
+        try store.recordVisit(url: "https://github.com", title: "GitHub", at: Date())
+        try store.recordVisit(url: "https://gitlab.com", title: "GitLab", at: Date())
+
+        // A bare reserved-keyword token, alone, must not crash the MATCH
+        // query — before quoting, FTS5 parses uppercase AND as an
+        // operator and throws `fts5: syntax error`.
+        XCTAssertNoThrow(try store.search("AND", limit: 10))
+
+        // The same keyword embedded in a phrase must still find the
+        // seeded "Terms and Conditions" entry, case-insensitively (FTS5
+        // tokenizes case-insensitively regardless of quoting).
+        let phraseResults = try store.search("Terms AND Conditions", limit: 10)
+        XCTAssertEqual(phraseResults.map(\.url), ["https://legal.example.com/terms"])
+
+        // A second reserved keyword (OR) must not crash either. Quoting
+        // neutralizes it into a literal token rather than honoring it as
+        // a boolean-or operator, so an AND-of-three-literal-tokens query
+        // matches nothing here — that's fine, the point is no throw.
+        let orResults = try store.search("gith OR gitl", limit: 10)
+        XCTAssertEqual(orResults, [])
+
+        // A token containing a literal double quote must not let the
+        // quote break out of its quoted FTS5 pattern.
+        XCTAssertNoThrow(try store.search("say \"hi\"", limit: 10))
+
+        // A lone '*' strips to nothing alphanumeric and must degrade to
+        // an empty result rather than a malformed MATCH pattern.
+        XCTAssertEqual(try store.search("*", limit: 10), [])
+
+        // A punctuation-only query likewise leaves no tokens after
+        // stripping.
+        XCTAssertEqual(try store.search("!!!", limit: 10), [])
+    }
+
+    func testSearchRespectsLimitWithBestRankedFirst() throws {
+        // 15 entries sharing identical text relevance ("Widget" matches
+        // each equally) but distinct recency, so frecency alone decides
+        // order and truncation is unambiguous to assert on.
+        let now = Date()
+        for i in 0..<15 {
+            let visitedAt = now.addingTimeInterval(-Double(i) * 60)   // i minutes ago
+            try store.recordVisit(url: "https://site\(i).com", title: "Widget", at: visitedAt)
+        }
+
+        let results = try store.search("Widget", limit: 5)
+        XCTAssertEqual(results.count, 5)
+        XCTAssertEqual(results.map(\.url), (0..<5).map { "https://site\($0).com" },
+                       "the 5 most recently visited entries should win, most recent first")
+    }
+
     // MARK: - recent()
 
     func testRecentOrdersByLastVisitedDescending() throws {
