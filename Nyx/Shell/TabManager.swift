@@ -9,14 +9,27 @@ import NyxCore
 @MainActor
 @Observable
 final class TabManager: NSObject {
+    /// A runtime split group (spec §5.1): a flat column of 2–4 tabs in one
+    /// space. `tabIDs` order is pane order; `weights` sum 1.0, each ≥ 0.15.
+    /// A tab belongs to at most one group.
+    struct RuntimeSplitGroup: Equatable {
+        var id: String
+        var tabIDs: [String]      // 2...4, order = pane order
+        var weights: [Double]
+    }
+
     private(set) var spaces: [SpaceRecord] = []
     private(set) var tabs: [BrowserTab] = []
+    private(set) var splitGroups: [RuntimeSplitGroup] = []
     var selectedSpaceID: String?
     private(set) var selectedTabID: String?
     var addressFocusToken = 0
 
     @ObservationIgnored var onStateChange: (() -> Void)?
     @ObservationIgnored var onSelectionChange: ((BrowserTab?) -> Void)?
+    /// Canvas re-layout trigger: fires whenever `visibleTabIDs` or a
+    /// group's weights change. `onSelectionChange` semantics are unchanged.
+    @ObservationIgnored var onVisibleSetChange: (() -> Void)?
 
     @ObservationIgnored private let factory: WebViewFactory
     @ObservationIgnored private var policy: TabLifecyclePolicy
@@ -37,12 +50,20 @@ final class TabManager: NSObject {
         return tabs.first { $0.id == selectedTabID }
     }
 
-    /// All tabs that must stay live: the selected tab plus, in M3, its
-    /// whole split group. Until the split API lands (Task 5) this is just
-    /// the selected tab.
-    var pinnedTabIDs: Set<String> {
-        selectedTabID.map { [$0] } ?? []
+    func splitGroup(containing tabID: String) -> RuntimeSplitGroup? {
+        splitGroups.first { $0.tabIDs.contains(tabID) }
     }
+
+    /// The selected tab's visible set: its whole group, or just itself.
+    var visibleTabIDs: [String] {
+        guard let selectedTabID else { return [] }
+        if let group = splitGroup(containing: selectedTabID) { return group.tabIDs }
+        return [selectedTabID]
+    }
+
+    /// All tabs that must stay live: every visible pane — the selected
+    /// tab's whole split group (spec §5.2).
+    var pinnedTabIDs: Set<String> { Set(visibleTabIDs) }
 
     func tabs(in spaceID: String) -> [BrowserTab] {
         tabs.filter { $0.spaceID == spaceID }
@@ -65,6 +86,7 @@ final class TabManager: NSObject {
     }
 
     func close(_ tab: BrowserTab) {
+        removeFromSplit(tab)   // closing a pane unsplits (spec §5.1)
         tab.hibernate()
         mruLive.removeAll { $0 == tab.id }
         tabs.removeAll { $0.id == tab.id }
@@ -87,12 +109,15 @@ final class TabManager: NSObject {
 
     func select(_ tab: BrowserTab) {
         guard selectedTabID != tab.id else { return }
+        let visibleBefore = visibleTabIDs
         selectedTabID = tab.id
         selectedSpaceID = tab.spaceID
         tab.lastActiveAt = Date()
-        activateIfNeeded(tab)
-        touchMRU(tab.id)
+        activateVisibleSet()
         enforcePolicy()
+        // A plain switch never suspends media (spec §5.2 suspends only on
+        // panes leaving a visible split — see removeFromSplit/dissolveSplit).
+        if visibleBefore != visibleTabIDs { onVisibleSetChange?() }
         onSelectionChange?(tab)
         onStateChange?()
     }
@@ -115,6 +140,144 @@ final class TabManager: NSObject {
         onStateChange?()
     }
 
+    /// Validating selected-space setter (M2 seam carry-over): the sidebar
+    /// switcher and moveTab(_:toSpace:) route through it. Callers reconcile
+    /// tab selection themselves.
+    func selectSpace(_ spaceID: String) {
+        guard spaces.contains(where: { $0.id == spaceID }) else {
+            NSLog("Nyx: selectSpace ignored unknown space %@", spaceID)
+            return
+        }
+        guard selectedSpaceID != spaceID else { return }
+        selectedSpaceID = spaceID
+        onStateChange?()
+    }
+
+    /// Moves a tab to another space (spec §5.4). Groups never span spaces,
+    /// so the tab leaves its split group first. Moving does not switch the
+    /// user's space unless the moved tab was selected (selection follows
+    /// its tab, matching select(_:)'s invariant).
+    func moveTab(_ tab: BrowserTab, toSpace spaceID: String) {
+        guard spaces.contains(where: { $0.id == spaceID }) else {
+            NSLog("Nyx: moveTab ignored unknown space %@", spaceID)
+            return
+        }
+        guard tab.spaceID != spaceID else { return }
+        removeFromSplit(tab)
+        tab.reassign(toSpace: spaceID)
+        if selectedTabID == tab.id { selectSpace(spaceID) }
+        onStateChange?()
+    }
+
+    // MARK: - Split groups (spec §5.1)
+
+    /// Groups `anchor` and `other` (max 4 panes; joining an existing group
+    /// appends). No-op with a log if the cap would be exceeded or the tabs
+    /// are in different spaces.
+    func split(_ anchor: BrowserTab, with other: BrowserTab) {
+        guard anchor.id != other.id else { return }
+        guard anchor.spaceID == other.spaceID else {
+            NSLog("Nyx: split refused — tabs in different spaces")
+            return
+        }
+        guard splitGroup(containing: other.id) == nil else {
+            NSLog("Nyx: split refused — tab already in a group")
+            return
+        }
+        if var group = splitGroup(containing: anchor.id) {
+            guard group.tabIDs.count < 4 else {
+                NSLog("Nyx: split cap (4) reached")
+                return
+            }
+            group.tabIDs.append(other.id)
+            group.weights = SplitWeights.appending(to: group.weights)
+            replaceGroup(group)
+        } else {
+            splitGroups.append(RuntimeSplitGroup(
+                id: UUID().uuidString,
+                tabIDs: [anchor.id, other.id],
+                weights: SplitWeights.equal(count: 2)))
+        }
+        activateVisibleSet()
+        enforcePolicy()
+        onVisibleSetChange?()
+        onStateChange?()
+    }
+
+    /// Removes a tab from its group, redistributing weights; a group left
+    /// with one member dissolves. Panes that thereby leave the visible
+    /// split get their media suspended (spec §5.2).
+    func removeFromSplit(_ tab: BrowserTab) {
+        guard var group = splitGroup(containing: tab.id),
+              let index = group.tabIDs.firstIndex(of: tab.id) else { return }
+        let visibleBefore = visibleTabIDs
+        group.tabIDs.remove(at: index)
+        group.weights = SplitWeights.removing(index: index, from: group.weights)
+        if group.tabIDs.count < 2 {
+            splitGroups.removeAll { $0.id == group.id }
+        } else {
+            replaceGroup(group)
+        }
+        finishGroupMutation(visibleBefore: visibleBefore)
+    }
+
+    /// Dissolves a whole group; every non-surviving pane (member that is
+    /// no longer visible afterwards) gets its media suspended.
+    func dissolveSplit(containing tab: BrowserTab) {
+        guard let group = splitGroup(containing: tab.id) else { return }
+        let visibleBefore = visibleTabIDs
+        splitGroups.removeAll { $0.id == group.id }
+        finishGroupMutation(visibleBefore: visibleBefore)
+    }
+
+    /// Commits divider weights (once, on drag end — spec §5.1). Input is
+    /// sanitized (sum 1.0, each ≥ 0.15) before storing.
+    func updateWeights(groupID: String, weights: [Double]) {
+        guard let index = splitGroups.firstIndex(where: { $0.id == groupID }) else {
+            NSLog("Nyx: updateWeights ignored unknown group %@", groupID)
+            return
+        }
+        let sanitized = SplitWeights.sanitized(weights,
+                                               count: splitGroups[index].tabIDs.count)
+        guard splitGroups[index].weights != sanitized else { return }
+        splitGroups[index].weights = sanitized
+        onVisibleSetChange?()
+        onStateChange?()
+    }
+
+    private func replaceGroup(_ group: RuntimeSplitGroup) {
+        guard let index = splitGroups.firstIndex(where: { $0.id == group.id })
+        else { return }
+        splitGroups[index] = group
+    }
+
+    /// Shared tail of the structural group mutations (remove/dissolve):
+    /// suspends media on panes that left the visible split — the ONLY
+    /// place media suspension happens, never on plain tab switches — then
+    /// reconciles webview lifecycle and fires the change callbacks.
+    private func finishGroupMutation(visibleBefore: [String]) {
+        let visibleAfter = Set(visibleTabIDs)
+        for id in Set(visibleBefore).subtracting(visibleAfter) {
+            tabs.first { $0.id == id }?.setMediaSuspended(true)
+        }
+        activateVisibleSet()
+        enforcePolicy()
+        onVisibleSetChange?()
+        onStateChange?()
+    }
+
+    /// Attaches webviews for every visible pane, lifts any media
+    /// suspension (a pane rejoining the visible set must be able to play
+    /// again), and marks each as recently used.
+    private func activateVisibleSet() {
+        for id in visibleTabIDs {
+            guard let tab = tabs.first(where: { $0.id == id }) else { continue }
+            activateIfNeeded(tab)
+            tab.setMediaSuspended(false)
+            touchMRU(id)
+        }
+    }
+
     // MARK: - Persistence bridging
 
     func restore(from snapshot: SessionSnapshot) {
@@ -125,6 +288,7 @@ final class TabManager: NSObject {
             registerCallbacks(on: tab)
             return tab
         }
+        restoreSplitGroups(from: snapshot)
         if let storedSpaceID = snapshot.selectedSpaceID,
            spaces.contains(where: { $0.id == storedSpaceID }) {
             selectedSpaceID = storedSpaceID
@@ -145,13 +309,51 @@ final class TabManager: NSObject {
     }
 
     func snapshotForSaving() -> SessionSnapshot {
+        var groupRecords: [SplitGroupRecord] = []
+        var membership: [String: String] = [:]   // tabID → groupID
+        for (index, group) in splitGroups.enumerated() {
+            guard let spaceID = tabs.first(where: { group.tabIDs.contains($0.id) })?
+                .spaceID else { continue }
+            groupRecords.append(SplitGroupRecord(
+                id: group.id, spaceID: spaceID, orderIndex: index,
+                weightsJSON: SplitGroupRecord.encodeWeights(group.weights)))
+            for tabID in group.tabIDs { membership[tabID] = group.id }
+        }
         var ordered: [TabRecord] = []
         for (index, tab) in tabs.enumerated() {
-            ordered.append(tab.record(orderIndex: index))
+            var record = tab.record(orderIndex: index)
+            record.splitGroupID = membership[tab.id]
+            ordered.append(record)
         }
         return SessionSnapshot(spaces: spaces, tabs: ordered,
+                               splitGroups: groupRecords,
                                selectedSpaceID: selectedSpaceID,
                                selectedTabID: selectedTabID)
+    }
+
+    /// Rebuilds runtime groups from persisted records. Member pane order =
+    /// tab orderIndex order; weights are sanitized for the surviving
+    /// member count; groups with fewer than 2 surviving same-space members
+    /// are dropped (their memberships are thereby nulled — runtime
+    /// membership derives from `splitGroups`, and the next snapshot writes
+    /// splitGroupID from it).
+    private func restoreSplitGroups(from snapshot: SessionSnapshot) {
+        splitGroups = snapshot.splitGroups
+            .sorted { $0.orderIndex < $1.orderIndex }
+            .compactMap { record in
+                let members = tabs.filter {
+                    $0.spaceID == record.spaceID
+                }.map(\.id).filter { id in
+                    snapshot.tabs.first { $0.id == id }?.splitGroupID == record.id
+                }
+                guard members.count >= 2 else { return nil }
+                let panes = Array(members.prefix(4))   // hard cap, spec §5.1
+                return RuntimeSplitGroup(
+                    id: record.id,
+                    tabIDs: panes,
+                    weights: SplitWeights.sanitized(record.weights,
+                                                    count: panes.count))
+            }
     }
 
     // MARK: - Lifecycle internals

@@ -9,7 +9,7 @@ import NyxCore
 @Observable
 final class BrowserTab: Identifiable {
     let id: String
-    let spaceID: String
+    private(set) var spaceID: String
     var title: String
     var urlString: String
     var isLoading = false
@@ -73,6 +73,17 @@ final class BrowserTab: Identifiable {
         canGoBack = false
         canGoForward = false
         return state
+    }
+
+    /// Space membership changes only through TabManager.moveTab(_:toSpace:),
+    /// which removes the tab from any split group first (groups never span
+    /// spaces, spec §5.1).
+    func reassign(toSpace spaceID: String) { self.spaceID = spaceID }
+
+    /// Media suspension for panes leaving a visible split (spec §5.2) —
+    /// never called on plain tab switches.
+    func setMediaSuspended(_ suspended: Bool) {
+        webView?.setAllMediaPlaybackSuspended(suspended)
     }
 
     func currentInteractionState() -> Data? {

@@ -51,7 +51,7 @@ struct SidebarView: View {
             ForEach(manager.spaces) { space in
                 Button {
                     guard space.id != manager.selectedSpaceID else { return }
-                    manager.selectedSpaceID = space.id
+                    manager.selectSpace(space.id)
                     if let first = manager.tabs(in: space.id).first {
                         manager.select(first)
                     } else {
