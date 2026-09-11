@@ -23,6 +23,9 @@ final class PaneCanvasController: NSViewController, NSSplitViewDelegate {
     /// Weights that arrived while the split view had zero width; applied
     /// in viewDidLayout once real geometry exists.
     private var pendingWeights: [Double]?
+    /// Bumped on every layout() entry; a flushed drag commit may re-enter
+    /// layout() via the coordinator, making the interrupted call stale.
+    private var layoutGeneration = 0
 
     override func loadView() {
         splitView.isVertical = true
@@ -65,14 +68,33 @@ final class PaneCanvasController: NSViewController, NSSplitViewDelegate {
                 weights: [Double], groupID: String?,
                 focusedTabID: String?) {
         loadViewIfNeeded()
+        layoutGeneration &+= 1
+        let generation = layoutGeneration
+        var tabs = tabs
+        if tabs.count > 4 {
+            NSLog("Nyx: layout clamped %ld tabs to the 4-pane maximum", tabs.count)
+            tabs = Array(tabs.prefix(4))
+        }
+        // An in-flight debounced drag commit: flush it when this re-layout
+        // stays within the same group and pane count (e.g. a focus click —
+        // otherwise the drag would be lost and dividers snapped back to
+        // stale weights); cancel it only when the group or pane count
+        // actually changed, making its fractions meaningless.
+        if commitTask != nil {
+            commitTask?.cancel()
+            commitTask = nil
+            if let groupID, groupID == currentGroupID, tabs.count == panes.count {
+                commitWeights(groupID: groupID)
+                // The commit may synchronously re-enter layout() via the
+                // coordinator; that nested call is newer — abandon this one.
+                guard layoutGeneration == generation else { return }
+            }
+        }
         currentGroupID = groupID
         paneTabIDs = tabs.map(\.id)
-        // A re-layout invalidates any in-flight divider commit: its
-        // fractions belong to the previous pane set / group.
-        commitTask?.cancel()
-        commitTask = nil
+        let previousSuppress = suppressCommit
         suppressCommit = true
-        defer { suppressCommit = false }
+        defer { suppressCommit = previousSuppress }
 
         // Shrink first, detaching webviews explicitly, so a webview that
         // moves to a surviving pane is never yanked out by a dying one.
@@ -103,8 +125,13 @@ final class PaneCanvasController: NSViewController, NSSplitViewDelegate {
     override func viewDidLayout() {
         super.viewDidLayout()
         guard let weights = pendingWeights, splitView.bounds.width > 0 else { return }
+        // Take the pending weights out first: applyWeights →
+        // layoutSubtreeIfNeeded can re-enter viewDidLayout, and the
+        // nested pass must not double-apply them.
+        pendingWeights = nil
+        let previousSuppress = suppressCommit
         suppressCommit = true
-        defer { suppressCommit = false }
+        defer { suppressCommit = previousSuppress }
         applyWeights(weights)
     }
 
