@@ -12,6 +12,12 @@ final class PaneViewController: NSViewController {
         let container = NSView()
         container.wantsLayer = true
         container.layer?.backgroundColor = DesignTokens.baseSurface.cgColor
+        // A bare NSView is NOT an accessibility element by default (unlike
+        // control subclasses such as NSSplitView) — without this, the
+        // "nyx.pane" identifier set on it by PaneCanvasController is never
+        // published to the accessibility tree and UI tests can never find it.
+        container.setAccessibilityElement(true)
+        container.setAccessibilityRole(.group)
         view = container
     }
 
