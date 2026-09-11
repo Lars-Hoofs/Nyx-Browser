@@ -4,55 +4,22 @@ import GRDB
 /// SQLite-backed session persistence (spec §4): WAL mode for crash
 /// safety; save() is a full transactional replace — session scale is
 /// tens of rows, so simplicity beats delta updates.
+///
+/// A thin facade over `NyxDatabase`, which owns the connection and the
+/// migrator (v1/v2/v3). `SessionStore(databaseURL:)` builds its own
+/// private `NyxDatabase`; `SessionStore(database:)` shares one already
+/// opened elsewhere (e.g. with a `HistoryStore`) — the path the app uses
+/// from M4 on so session and history live on one connection.
 public final class SessionStore {
-    private let dbQueue: DatabaseQueue
+    private let database: NyxDatabase
+    private var dbQueue: DatabaseQueue { database.dbQueue }
 
     public init(databaseURL: URL) throws {
-        var configuration = Configuration()
-        configuration.prepareDatabase { db in
-            try db.execute(sql: "PRAGMA journal_mode = WAL")
-        }
-        dbQueue = try DatabaseQueue(path: databaseURL.path, configuration: configuration)
-        try migrator.migrate(dbQueue)
+        database = try NyxDatabase(databaseURL: databaseURL)
     }
 
-    private var migrator: DatabaseMigrator {
-        var migrator = DatabaseMigrator()
-        migrator.registerMigration("v1") { db in
-            try db.create(table: "space") { t in
-                t.column("id", .text).primaryKey()
-                t.column("name", .text).notNull()
-                t.column("orderIndex", .integer).notNull()
-            }
-            try db.create(table: "tab") { t in
-                t.column("id", .text).primaryKey()
-                t.column("spaceID", .text).notNull().indexed()
-                    .references("space", onDelete: .cascade)
-                t.column("urlString", .text).notNull()
-                t.column("title", .text).notNull()
-                t.column("orderIndex", .integer).notNull()
-                t.column("interactionState", .blob)
-                t.column("lastActiveAt", .datetime).notNull()
-            }
-            try db.create(table: "meta") { t in
-                t.column("key", .text).primaryKey()
-                t.column("value", .text)
-            }
-        }
-        migrator.registerMigration("v2") { db in
-            try db.create(table: "split_group") { t in
-                t.column("id", .text).primaryKey()
-                t.column("spaceID", .text).notNull().indexed()
-                    .references("space", onDelete: .cascade)
-                t.column("orderIndex", .integer).notNull()
-                t.column("weightsJSON", .text).notNull()
-            }
-            try db.alter(table: "tab") { t in
-                t.add(column: "splitGroupID", .text)
-                    .references("split_group", onDelete: .setNull)
-            }
-        }
-        return migrator
+    public init(database: NyxDatabase) {
+        self.database = database
     }
 
     public func load() throws -> SessionSnapshot {
