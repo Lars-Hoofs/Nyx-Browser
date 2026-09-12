@@ -49,6 +49,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let dumpPath = dumpAdblockStateLaunchArgument() {
                 dumpAdblockState(to: dumpPath, coordinator: coordinator)
             }
+            // M6 Task 6: after coordinator.start() (a selected tab must
+            // already exist) and independent of the other DEBUG hooks
+            // above — order among them doesn't matter, each acts on its
+            // own concern.
+            if ProcessInfo.processInfo.arguments.contains("-nyx-start-test-download") {
+                coordinator.startTestDownload()
+            }
             #endif
         } catch {
             NSLog("Nyx failed to start: %@", String(describing: error))

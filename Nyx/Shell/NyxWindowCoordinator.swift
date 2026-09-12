@@ -634,5 +634,43 @@ final class NyxWindowCoordinator {
     func seedHistory(url: String, title: String) {
         try? historyStore.recordVisit(url: url, title: title, at: Date())
     }
+
+    /// Test hook (M6 Task 6, offline UI tests): starts exactly ONE
+    /// download of a small, deterministic, offline `data:` URL via the
+    /// selected tab's webview — `WKWebView.startDownload(using:)`, the
+    /// same entry point spec §5.7 names for a navigation a
+    /// `decidePolicyFor` turned `.download` (T4's funnel), except this
+    /// call site skips navigation/policy entirely and goes straight to a
+    /// download job, so a `data:` URL (which `WKWebView.load(_:)` does
+    /// not support for real navigation) is fine here. No fixture server,
+    /// no network — deterministic across CI/offline runs.
+    ///
+    /// Hands the resulting `WKDownload` straight to
+    /// `downloadManager.adopt`, mirroring exactly what T4's `didBecome`
+    /// handlers do with whatever `WKDownload` WebKit hands THEM — same
+    /// silent-cancel discipline applies: `adopt(_:)` assigns the delegate
+    /// as its first statement.
+    func startTestDownload() {
+        guard let webView = manager.selectedTab?.webView else {
+            NSLog("NyxWindowCoordinator: no selected tab webview; cannot start the test download.")
+            return
+        }
+        guard let url = URL(string: Self.testDownloadDataURL) else { return }
+        webView.startDownload(using: URLRequest(url: url)) { [weak self] download in
+            self?.downloadManager.adopt(download)
+        }
+    }
+
+    /// Arbitrary but fixed bytes ("Nyx test download\n", base64) — only
+    /// its determinism (identical every run) matters, not its content.
+    /// `WKDownload.decideDestination`'s `suggestedFilename` for a
+    /// `data:` URL is undocumented in the SDK headers, so tests built
+    /// against this hook deliberately do NOT assert an exact filename
+    /// (see `NyxUITests`'s design note on the two download tests) —
+    /// they poll the download DIRECTORY for any new file plus the
+    /// popover row appearing, which holds regardless of what name
+    /// WebKit picks.
+    static let testDownloadDataURL =
+        "data:application/octet-stream;base64,Tnl4IHRlc3QgZG93bmxvYWQK"
     #endif
 }
