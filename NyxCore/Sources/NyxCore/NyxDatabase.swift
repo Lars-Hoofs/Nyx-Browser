@@ -135,6 +135,30 @@ public final class NyxDatabase {
                 t.prefixes = [2, 3]
             }
         }
+        // v5 (M6): downloads. TEXT PK `id` (a UUID string minted by the
+        // shell when a policy decision turns a navigation into a
+        // `WKDownload`); `state` stored as TEXT (DownloadRecord.State's
+        // raw value) rather than INTEGER so the on-disk row is
+        // self-describing in a `sqlite3` shell without cross-referencing
+        // the enum's case order; `resumeData` BLOB nullable (present only
+        // after a cancel/failure that WebKit could resume — spec §6);
+        // `bytesReceived`/`bytesExpected` as INTEGER (`bytesExpected` is
+        // -1 when the server didn't report Content-Length).
+        migrator.registerMigration("v5") { db in
+            try db.create(table: "download") { t in
+                t.column("id", .text).primaryKey()
+                t.column("url", .text).notNull()
+                t.column("suggestedFilename", .text).notNull()
+                t.column("destinationPath", .text)
+                t.column("state", .text).notNull().indexed()
+                t.column("bytesReceived", .integer).notNull()
+                t.column("bytesExpected", .integer).notNull()
+                t.column("resumeData", .blob)
+                t.column("errorMessage", .text)
+                t.column("startedAt", .datetime).notNull().indexed()
+                t.column("finishedAt", .datetime)
+            }
+        }
         return migrator
     }
 }
