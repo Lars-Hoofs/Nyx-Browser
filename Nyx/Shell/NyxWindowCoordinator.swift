@@ -512,14 +512,48 @@ final class NyxWindowCoordinator {
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
     }
 
+    /// Night-glass chrome (T5 review, Important#1 fix): spec §8 names
+    /// popovers as frosted glass, within-window — `popover.appearance`
+    /// alone only styles AppKit's own arrow/border, never the content
+    /// view's backdrop. Mirrors `LauncherPanelController.ensurePanel()`
+    /// exactly: an `NSVisualEffectView` hosts the `NSHostingController`'s
+    /// view, pinned to all four edges so the effect view's size tracks
+    /// the SwiftUI content's own intrinsic size — `DownloadsPopover`
+    /// paints no opaque background of its own (see that file), so this
+    /// is the popover's only backdrop. `NSPopover` auto-sizes from
+    /// `contentViewController.view`'s Auto-Layout-driven fitting size
+    /// exactly as it did before this change (when that view WAS the
+    /// hosting controller's view directly); the four pin constraints
+    /// below give the wrapping view the identical size, so sizing
+    /// behavior is unchanged — only the backdrop is added.
     private func ensureDownloadsPopover() -> NSPopover {
         if let downloadsPopover { return downloadsPopover }
         let popover = NSPopover()
         popover.behavior = .transient
         popover.appearance = NSAppearance(named: .vibrantDark)
-        popover.contentViewController = NSHostingController(rootView: DownloadsPopover(
+
+        let hostingController = NSHostingController(rootView: DownloadsPopover(
             manager: downloadManager,
             onRetry: { [weak self] id in self?.retryDownload(id: id) }))
+
+        let glass = NSVisualEffectView()
+        glass.material = .hudWindow
+        glass.blendingMode = .withinWindow
+        glass.state = .active
+
+        let container = NSViewController()
+        container.view = glass
+        container.addChild(hostingController)
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        glass.addSubview(hostingController.view)
+        NSLayoutConstraint.activate([
+            hostingController.view.leadingAnchor.constraint(equalTo: glass.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: glass.trailingAnchor),
+            hostingController.view.topAnchor.constraint(equalTo: glass.topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: glass.bottomAnchor)
+        ])
+
+        popover.contentViewController = container
         downloadsPopover = popover
         return popover
     }

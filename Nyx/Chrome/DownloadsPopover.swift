@@ -107,7 +107,14 @@ struct DownloadsPopover: View {
             footer
         }
         .frame(width: Metrics.width)
-        .background(Color(nsColor: DesignTokens.baseSurface))
+        // No opaque background here (T5 review, Important#1): spec §8
+        // names popovers as frosted glass. `NyxWindowCoordinator.
+        // ensureDownloadsPopover()` wraps this view in an
+        // `NSVisualEffectView` (the launcher-panel idiom) that supplies
+        // the actual backdrop — painting an opaque color here would
+        // hide that material entirely. The row fills/hairlines below
+        // stay at their existing low opacities, which is what lets the
+        // glass show through them.
         .accessibilityIdentifier("nyx.downloads.popover")
     }
 
