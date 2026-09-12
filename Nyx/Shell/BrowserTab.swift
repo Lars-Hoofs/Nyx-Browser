@@ -1,3 +1,4 @@
+import AppKit
 import Observation
 import WebKit
 import NyxCore
@@ -375,11 +376,18 @@ final class NavigationRelay: NSObject, WKNavigationDelegate {
     // MARK: - Download policy (M6 spec §5.7)
 
     /// HOT PATH — runs on EVERY navigation the browser ever makes (link
-    /// clicks, redirects, form posts). The ONLY behavioral delta versus
-    /// having no implementation at all: `shouldPerformDownload` (an
-    /// explicit download gesture, e.g. an anchor's `download` attribute)
-    /// turns into `.download`. Everything else is `.allow`, immediately
-    /// and unconditionally — no logging, no other work here, ever.
+    /// clicks, redirects, form posts). The behavioral deltas versus having
+    /// no implementation at all are now two, both replicating/preserving
+    /// WebKit's own no-delegate default rather than adding new behavior:
+    /// `shouldPerformDownload` (an explicit download gesture, e.g. an
+    /// anchor's `download` attribute) turns into `.download`; a request
+    /// whose scheme WebKit itself cannot load (mailto:, tel:, a custom app
+    /// scheme, ...) is forwarded to the system and cancelled here instead
+    /// of dying silently, matching the SDK header's documented no-delegate
+    /// behavior ("the web view will load the request or, if appropriate,
+    /// forward it to another application"). Everything else — the
+    /// overwhelmingly common http/https case — is `.allow`, immediately
+    /// and unconditionally: no logging, no other work, on that path.
     ///
     /// Deliberately the 2-arg overload, NOT the `preferences:` variant:
     /// WebKit calls the preferences overload INSTEAD of this one when
@@ -392,7 +400,28 @@ final class NavigationRelay: NSObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView,
                  decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if let externalURL = Self.externalSchemeURL(for: navigationAction.request) {
+            NSWorkspace.shared.open(externalURL)
+            decisionHandler(.cancel)
+            return
+        }
         decisionHandler(navigationAction.shouldPerformDownload ? .download : .allow)
+    }
+
+    /// Pure decision behind the external-scheme forward above: the URL to
+    /// hand to `NSWorkspace`, or nil when WebKit itself can load the
+    /// request — the overwhelmingly common http/https case, which must
+    /// fall through immediately since this runs on every navigation.
+    /// `WKWebView.handlesURLScheme(_:)` is a class method (no instance
+    /// needed) and already covers WebKit's own built-in schemes (http,
+    /// https, about, blob, data, file, ...), so this returns non-nil only
+    /// for schemes nothing in WebKit claims. A request with no URL, or a
+    /// URL with no scheme, is not something WebKit would have handed us
+    /// for forwarding either — nil.
+    static func externalSchemeURL(for request: URLRequest) -> URL? {
+        guard let url = request.url, let scheme = url.scheme,
+              !WKWebView.handlesURLScheme(scheme) else { return nil }
+        return url
     }
 
     /// HOT PATH (every main/subframe response). `.download` only when the

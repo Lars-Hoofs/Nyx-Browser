@@ -16,10 +16,13 @@ import NyxCore
 ///   one. So the tests below pin that the funnel closures are WIRED
 ///   (non-nil, from every tab-creation site); invoking them with a live
 ///   download is T6's queued UI test's job.
-/// - `decidePolicyFor` as WebKit calls it on real navigations. The
-///   `.allow` default is a one-expression passthrough here; the existing
-///   12-test UI suite (queued) is the regression gate that ordinary
-///   browsing still navigates.
+/// - `decidePolicyFor` as WebKit calls it on real navigations, and the
+///   actual `NSWorkspace.shared.open` side effect (fix round 1: external-
+///   scheme forwarding) — the pure decision behind it,
+///   `externalSchemeURL(for:)`, is fully pinned below; the existing
+///   12-test UI suite plus a manual mailto:/tel: check (queued) is the
+///   regression gate that ordinary browsing and external-scheme handoff
+///   both still work end to end.
 /// - `shouldDownload(_ response:)`'s three-line WebKit-reading wrapper
 ///   (`canShowMIMEType` + header fetch) — WKNavigationResponse is not
 ///   meaningfully constructible either; the logic it feeds is fully
@@ -85,6 +88,67 @@ final class DownloadPolicyTests: XCTestCase {
                     canShowMIMEType: true, contentDisposition: header),
                 "expected allow for showable type with header \(header)")
         }
+    }
+
+    // MARK: - External-scheme forwarding (pure decision, no WebKit fakes
+    // beyond the class-method sanity anchor below — see the T4-review
+    // fix-round finding: an unconditional .allow silently drops
+    // mailto:/tel:/custom-scheme navigations WebKit would otherwise
+    // forward to another application. NSWorkspace.open itself is a side
+    // effect and is deliberately NOT exercised here — the queued/manual
+    // run is what proves the actual forwarding.)
+
+    /// Sanity-anchors that `WKWebView.handlesURLScheme` really does claim
+    /// the two schemes this browser's own navigation relies on — if this
+    /// ever failed, every http/https load would misroute through
+    /// NSWorkspace instead of falling through.
+    func testWebKitHandlesHTTPAndHTTPS() {
+        XCTAssertTrue(WKWebView.handlesURLScheme("http"))
+        XCTAssertTrue(WKWebView.handlesURLScheme("https"))
+    }
+
+    func testExternalSchemeURLForMailtoReturnsURL() {
+        let url = URL(string: "mailto:someone@example.com")!
+        XCTAssertEqual(
+            NavigationRelay.externalSchemeURL(for: URLRequest(url: url)), url)
+    }
+
+    func testExternalSchemeURLForTelReturnsURL() {
+        let url = URL(string: "tel:+15551234567")!
+        XCTAssertEqual(
+            NavigationRelay.externalSchemeURL(for: URLRequest(url: url)), url)
+    }
+
+    func testExternalSchemeURLForCustomAppSchemeReturnsURL() {
+        let url = URL(string: "nyxtest://open")!
+        XCTAssertEqual(
+            NavigationRelay.externalSchemeURL(for: URLRequest(url: url)), url)
+    }
+
+    func testExternalSchemeURLForHTTPAndHTTPSAllowsThrough() {
+        for scheme in ["http", "https"] {
+            let url = URL(string: "\(scheme)://example.com")!
+            XCTAssertNil(
+                NavigationRelay.externalSchemeURL(for: URLRequest(url: url)),
+                "expected nil (WebKit handles) for \(scheme)")
+        }
+    }
+
+    func testExternalSchemeURLForWebKitBuiltinSchemesAllowsThrough() {
+        for url in [URL(string: "about:blank")!,
+                    URL(string: "data:text/plain,hi")!,
+                    URL(string: "file:///tmp/x")!,
+                    URL(string: "blob:https://example.com/abc")!] {
+            XCTAssertNil(
+                NavigationRelay.externalSchemeURL(for: URLRequest(url: url)),
+                "expected nil (WebKit handles) for \(url.scheme ?? "nil")")
+        }
+    }
+
+    func testExternalSchemeURLForNilURLRequestReturnsNil() {
+        var request = URLRequest(url: URL(string: "https://example.com")!)
+        request.url = nil
+        XCTAssertNil(NavigationRelay.externalSchemeURL(for: request))
     }
 
     // MARK: - Funnel wiring (TabManager seam — see header for why the
