@@ -24,6 +24,32 @@ import NyxCore
 /// All file-based assertions write inside a per-test temp directory under
 /// `FileManager.default.temporaryDirectory` (this test bundle's own
 /// container) — never the real `~/Downloads`.
+
+/// Spy `WKWebView` subclass for the `pendingRetries` re-entrancy test
+/// below (same shape as `TabManagerMediaTests.SpyWebView`). Overrides the
+/// two download-starting entry points WITHOUT calling `super` or the
+/// completion handler, so `finishRetry` never fires and a retry stays
+/// "unresolved" indefinitely — exactly the window `pendingRetries` exists
+/// to guard, held open deterministically instead of racing a real async
+/// WebKit completion.
+@MainActor
+private final class SpyDownloadHost: WKWebView {
+    private(set) var resumeCallCount = 0
+    private(set) var startCallCount = 0
+
+    override func resumeDownload(fromResumeData resumeData: Data,
+                                  completionHandler: @escaping (WKDownload) -> Void) {
+        resumeCallCount += 1
+        // Deliberately never call completionHandler.
+    }
+
+    override func startDownload(using request: URLRequest,
+                                 completionHandler: @escaping (WKDownload) -> Void) {
+        startCallCount += 1
+        // Deliberately never call completionHandler.
+    }
+}
+
 @MainActor
 final class DownloadManagerTests: XCTestCase {
     private var dbURL: URL!
@@ -287,5 +313,41 @@ final class DownloadManagerTests: XCTestCase {
 
         XCTAssertEqual(manager.items.first?.record.state, .failed,
                        "invalid URL must be caught before any host.startDownload call")
+    }
+
+    // MARK: - retry: pendingRetries re-entrancy guard
+
+    func testSecondRetryWhileFirstIsUnresolvedNeverCallsHostAgain_resumeBranch() {
+        var record = DownloadManager.makeRunningRecord(url: URL(string: "https://example.com/a.zip")!)
+        record.state = .failed
+        record.resumeData = Data([0x01, 0x02]) // → RetryAction.resume
+        manager.seedForTesting(record)
+        let host = SpyDownloadHost(frame: .zero)
+
+        manager.retry(id: record.id, host: host) // first call: reaches host, never resolves
+        manager.retry(id: record.id, host: host) // second call: must be blocked by pendingRetries
+
+        XCTAssertEqual(host.resumeCallCount, 1,
+                       "a second retry while the first is unresolved must never reach the host")
+        XCTAssertEqual(host.startCallCount, 0)
+        XCTAssertEqual(manager.items.first?.record.state, .failed,
+                       "state must not change until finishRetry actually runs")
+    }
+
+    func testSecondRetryWhileFirstIsUnresolvedNeverCallsHostAgain_freshStartBranch() {
+        var record = DownloadManager.makeRunningRecord(url: URL(string: "https://example.com/a.zip")!)
+        record.state = .failed
+        record.resumeData = nil // forces .freshStart, not .resume
+        manager.seedForTesting(record)
+        let host = SpyDownloadHost(frame: .zero)
+
+        manager.retry(id: record.id, host: host) // first call: reaches host, never resolves
+        manager.retry(id: record.id, host: host) // second call: must be blocked by pendingRetries
+
+        XCTAssertEqual(host.startCallCount, 1,
+                       "a second retry while the first is unresolved must never reach the host")
+        XCTAssertEqual(host.resumeCallCount, 0)
+        XCTAssertEqual(manager.items.first?.record.state, .failed,
+                       "state must not change until finishRetry actually runs")
     }
 }

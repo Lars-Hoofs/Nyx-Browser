@@ -40,9 +40,16 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     /// (already ordered) present identically.
     private(set) var items: [Item] = []
 
-    /// Coordinator hook (badge, popover refresh) — fired after every
-    /// mutation to `items`, whether or not the underlying store write
-    /// succeeded.
+    /// Coordinator hook (badge, popover refresh). By convention, every
+    /// public mutating call site (`adopt`, `decideDestination`,
+    /// `downloadDidFinish`, `didFailWithError`, `cancel`, `retry`'s
+    /// `finishRetry`, `remove`, `clearFinished`, `rebuildFromStore`) fires
+    /// this once after it settles `items` and/or the store — whether or
+    /// not the underlying store write succeeded. The mutation PRIMITIVES
+    /// (`transition`, `updateRecord`) do NOT fire it themselves: they're
+    /// building blocks a call site composes with other bookkeeping
+    /// (`untrack`, persistence) before deciding when to notify, so firing
+    /// lives at the call site, not the primitive.
     var onItemsChanged: (() -> Void)?
 
     /// Live `WKDownload`s keyed by record id — needed so `cancel(id:)` and
@@ -59,6 +66,20 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     /// can never collide with a stale identifier.
     private var recordIDsByDownload: [ObjectIdentifier: String] = [:]
 
+    /// Ids with an unresolved `retry(id:host:)` call. A retried record's
+    /// state only flips to `.running` inside `finishRetry`, which runs
+    /// asynchronously after `host.resumeDownload`/`startDownload`'s
+    /// completion fires — without this guard, a second `retry(id:)` for
+    /// the same id in that window would pass the same `retryAction` check
+    /// and spawn a SECOND `WKDownload` on one record, leaving a stale
+    /// `recordIDsByDownload` entry that misattributes later delegate
+    /// callbacks. Checked and inserted synchronously at the very top of
+    /// `retry(id:host:)` (`RuleListManager.isBootstrapping` precedent);
+    /// removed at every exit — the early-return guards inside `retry`
+    /// itself for the paths that never touch `host`, and inside
+    /// `finishRetry` for the two that do.
+    private var pendingRetries: Set<String> = []
+
     init(store: DownloadStore, destinationDirectory: URL) {
         self.store = store
         self.destinationDirectory = destinationDirectory
@@ -71,6 +92,12 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     /// download the moment it notices no delegate has been assigned, so
     /// the assignment MUST be this method's first statement — not after
     /// building the record, not after touching `items`.
+    ///
+    /// Single-call contract: WebKit calls `didBecome` exactly once per
+    /// download, and T4 wires exactly one call site into this method —
+    /// `adopt(_:)` assumes it is never invoked twice for the same
+    /// `WKDownload` (a second call would insert a duplicate `Item` and
+    /// silently overwrite the first `WKDownload`'s `activeDownloads` entry).
     func adopt(_ download: WKDownload) {
         download.delegate = self
 
@@ -108,6 +135,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         guard let id = recordID(for: download) else {
             // Should never happen (adopt(_:) always runs first) — refuse
             // rather than write to a location nobody is tracking.
+            NSLog("DownloadManager: decideDestination called for an unrecognized WKDownload; refusing to name a destination.")
             completionHandler(nil)
             return
         }
@@ -124,7 +152,10 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     }
 
     func downloadDidFinish(_ download: WKDownload) {
-        guard let id = recordID(for: download) else { return }
+        guard let id = recordID(for: download) else {
+            NSLog("DownloadManager: downloadDidFinish called for an unrecognized WKDownload; ignoring.")
+            return
+        }
         transition(id: id, to: .finished) { record in
             record.finishedAt = Date()
         }
@@ -133,7 +164,10 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-        guard let id = recordID(for: download) else { return }
+        guard let id = recordID(for: download) else {
+            NSLog("DownloadManager: didFailWithError called for an unrecognized WKDownload; ignoring.")
+            return
+        }
         // Spec §6: NSLog, never a dialog, never a crash.
         NSLog("DownloadManager: download %@ failed: %@", id, String(describing: error))
         transition(id: id, to: .failed) { record in
@@ -165,9 +199,24 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     /// there is nothing to retry. Reuses the SAME record id throughout:
     /// the retried download is a continuation of this row, not a new one.
     func retry(id: String, host: WKWebView) {
-        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        // Re-entrancy guard, checked+inserted synchronously before anything
+        // else runs: the id only leaves `pendingRetries` once the retry
+        // resolves (see the type doc above `pendingRetries`), so a second
+        // call for the same id while the first is still in flight is a
+        // no-op — it never reaches `retryAction`, let alone `host`.
+        guard pendingRetries.insert(id).inserted else {
+            NSLog("DownloadManager: retry(id:) called again for download %@ while a previous retry is still unresolved; ignoring.", id)
+            return
+        }
+        guard let index = items.firstIndex(where: { $0.id == id }) else {
+            pendingRetries.remove(id)
+            return
+        }
         let record = items[index].record
-        guard let action = DownloadLogic.retryAction(for: record) else { return }
+        guard let action = DownloadLogic.retryAction(for: record) else {
+            pendingRetries.remove(id)
+            return
+        }
 
         switch action {
         case .resume(let data):
@@ -177,6 +226,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         case .freshStart:
             guard let url = URL(string: record.url) else {
                 NSLog("DownloadManager: cannot retry download %@ — stored URL %@ is invalid.", id, record.url)
+                pendingRetries.remove(id)
                 return
             }
             host.startDownload(using: URLRequest(url: url)) { [weak self] download in
@@ -186,8 +236,13 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     }
 
     /// Same silent-cancel warning as `adopt(_:)` — the delegate assignment
-    /// is this method's first statement.
+    /// is this method's first statement. Also where the two async-arriving
+    /// exits of `retry(id:host:)` release `pendingRetries` — both the
+    /// `.resume` and `.freshStart` branches land here, and there is no
+    /// failure variant of this completion (`WKWebView` always hands back a
+    /// `WKDownload`, never an error, at this stage).
     private func finishRetry(id: String, download: WKDownload) {
+        pendingRetries.remove(id)
         download.delegate = self
         track(download, id: id)
         transition(id: id, to: .running) { record in
@@ -211,7 +266,11 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             return
         }
         items.remove(at: index)
-        activeDownloads.removeValue(forKey: id)
+        // No `activeDownloads`/`recordIDsByDownload` entry to clear here:
+        // the guard above already refused the one state (`running`) where
+        // a live `WKDownload` could still be tracked — every other state
+        // reached `untrack` already, on the transition that made it
+        // terminal (`downloadDidFinish`/`didFailWithError`/`cancel`).
         do {
             try store.delete(id: id)
         } catch {
