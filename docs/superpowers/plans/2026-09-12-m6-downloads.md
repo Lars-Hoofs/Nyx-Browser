@@ -81,7 +81,7 @@ public enum DownloadLogic {
 }
 ```
 
-Transition table (test every cell): `running → finished|failed|cancelled` valid; `failed|cancelled|interrupted → running` valid (retry); everything else invalid (`finished` is terminal; `interrupted` is set only by the launch rebuild, never at runtime). `uniqueFilename`: no-extension names, dotfiles (".zshrc"), multi-dot names ("archive.tar.gz" → "archive (2).tar.gz" is acceptable and pinned — document the simple `.lastDotSplit` choice), the counter scans until free. `retryAction`: failed+data → resume, failed+nil → freshStart, interrupted+nil → freshStart, cancelled+data → resume, finished/running → nil.
+Transition table (test every cell): `running → finished|failed|cancelled` valid; `failed|cancelled|interrupted → running` valid (retry); everything else invalid (`finished` is terminal; `interrupted` is set only by the launch rebuild, never at runtime). `uniqueFilename`: no-extension names, dotfiles (".zshrc"), multi-dot names ("archive.tar.gz" → "archive.tar (2).gz" is acceptable and pinned — document the simple `.lastDotSplit` choice), the counter scans until free. `retryAction`: failed+data → resume, failed+nil → freshStart, interrupted+nil → freshStart, cancelled+data → resume, finished/running → nil.
 
 Battery [CORE]: build + test-core. Commit: `feat(m6): download state machine + naming logic`
 

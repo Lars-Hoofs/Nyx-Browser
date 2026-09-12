@@ -255,9 +255,9 @@ final class ContentRuleEvaluationTests: XCTestCase {
         // SHARED controller. Opener blocks on a.example (marker=true) →
         // popup commits to an overridden host, stripping the shared
         // controller → opener commits to c.example, ALSO decision true.
-        // Without adoption invalidating the opener's marker, true ==
-        // stale true would skip the evaluation and the opener would stay
-        // unblocked across every future same-decision commit.
+        // The onContentRulesActed callback (fired when an evaluation acts)
+        // invalidates other sharers' markers so the opener's next same-
+        // decision commit re-evaluates instead of skipping.
         let manager = makeManager()
         let opener = manager.newTab()
         opener.navigationDidCommit(URL(string: "https://a.example/")!)

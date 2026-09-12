@@ -133,18 +133,17 @@ final class BrowserTab: Identifiable {
     /// on its own first didCommit (and any later attach, which gets a
     /// fresh factory webview and therefore a private controller).
     /// Accepted consequence of the shared controller: an apply/remove for
-    /// either tab's site affects both, and the bleed lasts only until the
-    /// affected side's marker is next invalidated — which happens
-    /// automatically every time ANY sharer's evaluation ACTS on the
-    /// shared controller, not just once at adoption: BrowserTab fires
-    /// onContentRulesActed whenever evaluateContentRules actually
-    /// removes/applies, and TabManager (registerCallbacks) invalidates
-    /// every OTHER live tab whose controller is that same instance. So
-    /// the affected side's very next evaluation — its next cross-host
-    /// commit, a re-attach (fresh factory controller), or a forced
-    /// re-evaluation, in WHICHEVER order the sharers happen to act —
-    /// always acts instead of trusting a stale "already applied"/
-    /// "already removed" answer. (This also covers a mixed-decision
+    /// either tab's site affects both — a bleed created and repaired at
+    /// the same act, the affected side's next evaluation always acts when
+    /// ANY sharer's evaluation ACTS on the shared controller, not just
+    /// once at adoption: BrowserTab fires onContentRulesActed whenever
+    /// evaluateContentRules actually removes/applies, and TabManager
+    /// (registerCallbacks) invalidates every OTHER live tab whose
+    /// controller is that same instance. So the affected side's very next
+    /// evaluation — its next cross-host commit, a re-attach (fresh
+    /// factory controller), or a forced re-evaluation, in WHICHEVER order
+    /// the sharers happen to act — always acts instead of trusting a
+    /// stale "already applied"/"already removed" answer. (This also covers a mixed-decision
     /// force pass where one sharer acts after the other: each act
     /// invalidates the other, so neither marker can end up describing a
     /// controller state the OTHER sharer has since overwritten.)
@@ -441,8 +440,8 @@ final class NavigationRelay: NSObject, WKNavigationDelegate {
     /// is `download.delegate = self`. No stale-webview guard here, on
     /// purpose: the download is app-global the moment it exists, and
     /// dropping it because the tab re-attached in between would BE the
-    /// silent cancel the spec warns about. (An unwired callback — tests
-    /// that never install one — does lose the download; production
+    /// silent cancel the spec warns about. (If the tab deallocates, the
+    /// relay dies with it and didBecome never arrives; production
     /// wiring is unconditional in registerCallbacks.)
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction,
                  didBecome download: WKDownload) {
