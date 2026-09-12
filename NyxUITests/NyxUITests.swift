@@ -101,7 +101,7 @@ final class NyxUITests: XCTestCase {
     /// names it, it does not create it (T4 already owns creation; no
     /// duplication).
     private func freshDownloadDirectory() -> URL {
-        let url = FileManager.default.homeDirectoryForCurrentUser
+        let url = Self.realUserHome
             .appendingPathComponent(
                 "Library/Containers/com.larshoofs.Nyx/Data/tmp/downloads-\(UUID().uuidString)",
                 isDirectory: true)
