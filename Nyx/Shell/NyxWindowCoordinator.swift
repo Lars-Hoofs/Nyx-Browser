@@ -500,12 +500,33 @@ final class NyxWindowCoordinator {
             downloadsPopover.close()
             return
         }
-        guard let anchor = downloadsButtonAnchor else {
+        // ⇧⌘S with a collapsed sidebar detaches the anchor view from the
+        // window (NSSplitViewController pulls the collapsed item's view
+        // out of the hierarchy); showing a popover against a windowless
+        // view throws an uncaught NSException (final review, C-1 —
+        // empirically reproduced). Mirror focusAddress's collapsed-sidebar
+        // reveal (above, "M1 review") exactly, INCLUDING its timing: that
+        // call is synchronous, no Task {}/DispatchQueue defer, and relies
+        // on isCollapsed's animator-proxy setter applying the layout
+        // change (arranged-subview reattachment) immediately, only
+        // animating the resulting frame/divider motion. A fixed one-tick
+        // defer here would be both unnecessary (reattachment is
+        // synchronous) and unreliable (the visual animation itself runs
+        // ~0.25s, far longer than one runloop tick) — so this stays
+        // synchronous like focusAddress, with the `anchor.window != nil`
+        // check below as a belt against any animator-timing state this
+        // reasoning missed.
+        if let item = splitViewController.splitViewItems.first, item.isCollapsed {
+            item.animator().isCollapsed = false
+        }
+        guard let anchor = downloadsButtonAnchor, anchor.window != nil else {
             // Should not happen in practice — SidebarView's AnchorReporter
             // resolves on the sidebar's first layout pass, well before any
-            // menu/click can reach this method — but never crash a menu
-            // action over a not-yet-resolved anchor.
-            NSLog("NyxWindowCoordinator: downloads button anchor not resolved yet; cannot show the downloads popover.")
+            // menu/click can reach this method, and the un-collapse above
+            // keeps the anchor in the window — but never crash a menu
+            // action over a not-yet-resolved (or unexpectedly windowless)
+            // anchor.
+            NSLog("NyxWindowCoordinator: downloads button anchor not resolved (or not in a window); cannot show the downloads popover.")
             return
         }
         let popover = ensureDownloadsPopover()

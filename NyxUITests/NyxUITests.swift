@@ -593,4 +593,41 @@ final class NyxUITests: XCTestCase {
         // a11y surface (see the doc comment above).
         XCTAssertGreaterThanOrEqual(fileCount(in: downloadDir), 1)
     }
+
+    /// C-1 pin (final review): a collapsed sidebar detaches the downloads
+    /// button anchor from the window — `NSSplitViewController` pulls the
+    /// collapsed item's view out of the hierarchy — so showing the
+    /// popover against that anchor threw an uncaught `NSException`
+    /// before `toggleDownloadsPopover()`'s fix (mirrors `focusAddress`'s
+    /// pre-existing collapsed-sidebar reveal, "M1 review"). This test
+    /// drives the exact same ⇧⌘S the user would press to collapse the
+    /// sidebar, confirms the collapse actually took — the sidebar's
+    /// `nyx.tabRow` outline (the same surface every other test in this
+    /// file uses to observe live sidebar content) disappearing is the
+    /// only clean signal this app exposes for "the sidebar is gone" —
+    /// then opens the downloads popover via the real View ▸ Downloads
+    /// menu item (same path `openDownloadsPopover` drives elsewhere) and
+    /// asserts BOTH that the popover appears AND that the app process is
+    /// still in the foreground: an uncaught `NSException` crash would
+    /// fail this test loudly (the app terminating) rather than the
+    /// popover query merely timing out.
+    func testDownloadsPopoverOpensWithCollapsedSidebar() throws {
+        let app = launch(dbName: freshDatabaseName())
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+        let rows = tabRows(in: app)
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
+
+        app.typeKey("s", modifierFlags: [.command, .shift])
+        XCTAssertTrue(rows.firstMatch.waitForNonExistence(timeout: 10),
+                      "\u{21e7}\u{2318}S must actually collapse the sidebar before " +
+                      "the popover open below is a meaningful test of C-1")
+
+        openDownloadsPopover(in: app)
+
+        let popover = app.descendants(matching: .any).matching(identifier: "nyx.downloads.popover")
+        XCTAssertTrue(popover.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(app.state, .runningForeground,
+                       "an uncaught NSException in toggleDownloadsPopover would " +
+                       "terminate the app rather than merely fail the query above")
+    }
 }
