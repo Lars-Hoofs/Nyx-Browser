@@ -33,15 +33,29 @@ final class NyxUITests: XCTestCase {
     /// assertion (mirrors `usedDatabaseNames` below).
     private var usedDumpPaths: [URL] = []
 
+    /// The REAL user home (/Users/<name>), resolved via getpwuid. The
+    /// xctrunner has its own sandbox container on this SDK, so
+    /// `FileManager.homeDirectoryForCurrentUser` returns the RUNNER's
+    /// container — nesting any "Library/Containers/com.larshoofs.Nyx/…"
+    /// path inside `…NyxUITests.xctrunner/Data/…`, where the app never
+    /// writes (first live run of the adblock tests proved it: NSCocoaError
+    /// 260, file written to the real container, read attempted in the
+    /// nested one). getpwuid reports the true home regardless of sandbox.
+    private static let realUserHome: URL = {
+        if let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir {
+            return URL(fileURLWithPath: String(cString: dir), isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+    }()
+
     /// A fresh path inside the app's OWN sandbox container (`Data/tmp`,
     /// the same directory `NSTemporaryDirectory()` resolves to for a
     /// sandboxed app), so the app process can write it under its default
-    /// sandbox grant with no extra entitlement, and this (unsandboxed)
-    /// runner can still read it back directly afterwards — the same
-    /// direct-container-access pattern `tearDownWithError` already uses
-    /// for the UITest databases below.
+    /// sandbox grant with no extra entitlement, and this runner can read
+    /// it back directly afterwards — anchored at `realUserHome`, NOT
+    /// `homeDirectoryForCurrentUser` (see above).
     private func adblockStateDumpURL() -> URL {
-        let url = FileManager.default.homeDirectoryForCurrentUser
+        let url = Self.realUserHome
             .appendingPathComponent(
                 "Library/Containers/com.larshoofs.Nyx/Data/tmp/adblock-\(UUID().uuidString).txt")
         usedDumpPaths.append(url)
@@ -108,7 +122,7 @@ final class NyxUITests: XCTestCase {
         // Best-effort cleanup: the app writes its UITest databases inside
         // its own sandbox container, which the (unsandboxed) test runner
         // can still reach directly.
-        let containerAppSupport = FileManager.default.homeDirectoryForCurrentUser
+        let containerAppSupport = Self.realUserHome
             .appendingPathComponent("Library/Containers/com.larshoofs.Nyx/Data/Library/Application Support/Nyx/UITests", isDirectory: true)
         for name in usedDatabaseNames {
             for suffix in ["", "-wal", "-shm"] {
