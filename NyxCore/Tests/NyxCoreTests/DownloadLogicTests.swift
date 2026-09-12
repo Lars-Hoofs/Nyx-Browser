@@ -120,6 +120,43 @@ final class DownloadLogicTests: XCTestCase {
         XCTAssertEqual(result, "archive.tar (3).gz")
     }
 
+    func testTrailingDotIsTreatedAsNoExtension() {
+        // "archive." has an empty extension after the dot — per lastDotSplit's
+        // documented contract this counts as no extension at all. The base
+        // is everything before the dot ("archive"); the trailing dot itself
+        // is dropped along with the (empty) extension, so the counter lands
+        // on "archive (2)", same shape as the no-extension case.
+        let result = DownloadLogic.uniqueFilename("archive.") { $0 == "archive." }
+        XCTAssertEqual(result, "archive (2)")
+    }
+
+    func testTrailingDotAlreadyFreeReturnsUnchanged() {
+        let result = DownloadLogic.uniqueFilename("archive.") { _ in false }
+        XCTAssertEqual(result, "archive.")
+    }
+
+    func testPathologicalAlwaysTakenClosureTerminatesWithBoundedFallback() {
+        // A `taken` closure that never reports a candidate as free must not
+        // hang the caller. uniqueFilename bails out after its defensive
+        // probe bound (1000 attempts: the initial "suggested" check plus
+        // counters 2...1000) and returns the next counter value WITHOUT
+        // consulting `taken` again — "report (1001).pdf".
+        var callCount = 0
+        let result = DownloadLogic.uniqueFilename("report.pdf") { _ in
+            callCount += 1
+            return true
+        }
+        XCTAssertEqual(result, "report (1001).pdf")
+        // Exactly 1000 taken() calls: 1 for "report.pdf" + 999 for counters 2...1000.
+        XCTAssertEqual(callCount, 1000)
+    }
+
+    func testPathologicalAlwaysTakenClosureTerminatesForNoExtensionName() {
+        // Same defensive bound, exercised on the no-extension code path.
+        let result = DownloadLogic.uniqueFilename("Makefile") { _ in true }
+        XCTAssertEqual(result, "Makefile (1001)")
+    }
+
     // MARK: - retryAction
 
     private func record(state: DownloadRecord.State, resumeData: Data?) -> DownloadRecord {

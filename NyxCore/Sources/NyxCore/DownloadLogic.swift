@@ -23,21 +23,48 @@ public enum DownloadLogic {
         }
     }
 
-    /// "report.pdf" taken → "report (2).pdf"; case-insensitive comparison,
-    /// preserves the extension, increments until free. `taken` is asked
-    /// about each candidate in turn (the suggested name first) — the first
-    /// one it reports free is returned unchanged from probing further.
+    /// "report.pdf" taken → "report (2).pdf"; preserves the extension,
+    /// increments until free. `taken` is asked about each candidate in turn
+    /// (the suggested name first) — the first one it reports free is
+    /// returned, without probing further. Candidates are passed to `taken`
+    /// verbatim: this function does no case-folding of its own, so the
+    /// caller's closure decides comparison semantics (e.g. matching
+    /// case-insensitively, as `DownloadManager` does).
+    ///
+    /// Contract: for normal operation `taken` is expected to eventually
+    /// return `false` for one of the probed candidates (i.e. collisions are
+    /// finite). If it does not — a pathological always-true closure, or an
+    /// implausibly long real collision run — this function still
+    /// terminates: after `maxProbeAttempts` probes it stops consulting
+    /// `taken` and returns the next counter-suffixed candidate
+    /// unconditionally. That termination guarantee holds regardless of what
+    /// `taken` does; only the *shape* of the fallback name is affected by
+    /// the pathological case, never whether the call returns.
     public static func uniqueFilename(_ suggested: String, taken: (String) -> Bool) -> String {
         guard taken(suggested) else { return suggested }
 
         let (base, ext) = lastDotSplit(suggested)
         var counter = 2
-        while true {
+        while counter <= maxProbeAttempts {
             let candidate = ext.map { "\(base) (\(counter)).\($0)" } ?? "\(base) (\(counter))"
             if !taken(candidate) { return candidate }
             counter += 1
         }
+        // Defensive bound reached: `taken` reported every candidate through
+        // "(\(maxProbeAttempts))" as taken. Rather than loop forever, fall
+        // back to the next counter value UNCONDITIONALLY — without calling
+        // `taken` again — so the function is guaranteed to terminate. The
+        // caller's fileExists-race handling downstream is unchanged either
+        // way: it already tolerates being handed a name that turns out to
+        // collide.
+        return ext.map { "\(base) (\(counter)).\($0)" } ?? "\(base) (\(counter))"
     }
+
+    /// Hard bound on probe attempts in `uniqueFilename`, guarding against a
+    /// pathological `taken` closure that always returns `true` (which would
+    /// otherwise hang the caller forever). 1000 is comfortably above any
+    /// realistic collision count for real filesystem naming.
+    private static let maxProbeAttempts = 1000
 
     /// Splits on the LAST '.' only (so "archive.tar.gz" → base "archive.tar",
     /// ext "gz" — the counter lands right before the final extension, not
