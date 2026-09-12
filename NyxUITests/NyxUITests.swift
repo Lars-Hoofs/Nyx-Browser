@@ -28,11 +28,69 @@ final class NyxUITests: XCTestCase {
         app.outlines.descendants(matching: .any).matching(identifier: "nyx.tabRow")
     }
 
+    /// Absolute paths handed to `-nyx-dump-adblock-state`, so
+    /// `tearDownWithError` can best-effort remove them even on a failed
+    /// assertion (mirrors `usedDatabaseNames` below).
+    private var usedDumpPaths: [URL] = []
+
+    /// The REAL user home (/Users/<name>), resolved via getpwuid. The
+    /// xctrunner has its own sandbox container on this SDK, so
+    /// `FileManager.homeDirectoryForCurrentUser` returns the RUNNER's
+    /// container — nesting any "Library/Containers/com.larshoofs.Nyx/…"
+    /// path inside `…NyxUITests.xctrunner/Data/…`, where the app never
+    /// writes (first live run of the adblock tests proved it: NSCocoaError
+    /// 260, file written to the real container, read attempted in the
+    /// nested one). getpwuid reports the true home regardless of sandbox.
+    private static let realUserHome: URL = {
+        if let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir {
+            return URL(fileURLWithPath: String(cString: dir), isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+    }()
+
+    /// A fresh path inside the app's OWN sandbox container (`Data/tmp`,
+    /// the same directory `NSTemporaryDirectory()` resolves to for a
+    /// sandboxed app), so the app process can write it under its default
+    /// sandbox grant with no extra entitlement, and this runner can read
+    /// it back directly afterwards — anchored at `realUserHome`, NOT
+    /// `homeDirectoryForCurrentUser` (see above).
+    private func adblockStateDumpURL() -> URL {
+        let url = Self.realUserHome
+            .appendingPathComponent(
+                "Library/Containers/com.larshoofs.Nyx/Data/tmp/adblock-\(UUID().uuidString).txt")
+        usedDumpPaths.append(url)
+        return url
+    }
+
+    /// Polls for the DEBUG dump file (written once, synchronously, right
+    /// after `applicationDidFinishLaunching` finishes its DEBUG setup —
+    /// see `AppDelegate.dumpAdblockState`) and parses its `key=value`
+    /// lines. Reads the coordinator's OWN state directly, deliberately
+    /// bypassing `NSMenuItem` checkmark/enabled reads: those items only
+    /// validate (and set `.state`/`.isEnabled`) while their menu is open,
+    /// and XCUITest's read of menu-item state is documented elsewhere in
+    /// this codebase (global-constraints.md's flake note) as unreliable
+    /// on this SDK — this is the pre-authorized, deterministic fallback.
+    private func readAdblockState(at url: URL, timeout: TimeInterval = 10) throws -> [String: String] {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !FileManager.default.fileExists(atPath: url.path) && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        let text = try String(contentsOf: url, encoding: .utf8)
+        var result: [String: String] = [:]
+        for line in text.split(separator: "\n") {
+            let parts = line.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            result[String(parts[0])] = String(parts[1])
+        }
+        return result
+    }
+
     override func tearDownWithError() throws {
         // Best-effort cleanup: the app writes its UITest databases inside
         // its own sandbox container, which the (unsandboxed) test runner
         // can still reach directly.
-        let containerAppSupport = FileManager.default.homeDirectoryForCurrentUser
+        let containerAppSupport = Self.realUserHome
             .appendingPathComponent("Library/Containers/com.larshoofs.Nyx/Data/Library/Application Support/Nyx/UITests", isDirectory: true)
         for name in usedDatabaseNames {
             for suffix in ["", "-wal", "-shm"] {
@@ -41,6 +99,10 @@ final class NyxUITests: XCTestCase {
             }
         }
         usedDatabaseNames.removeAll()
+        for url in usedDumpPaths {
+            try? FileManager.default.removeItem(at: url)
+        }
+        usedDumpPaths.removeAll()
         try super.tearDownWithError()
     }
 
@@ -298,5 +360,97 @@ final class NyxUITests: XCTestCase {
             app.launch()
             app.terminate()
         }
+    }
+
+    // MARK: - Adblock (M5 Task 8)
+
+    /// Design decision (recorded per the task-8 brief's pre-authorized
+    /// fallback): asserts the "Block Ads" toggle's PERSISTED state via
+    /// the `-nyx-dump-adblock-state` file dump, not via an
+    /// `app.menuItems["Block Ads"]` state/checkmark read. The toggle
+    /// itself IS still driven through the real menu (`.click()` on the
+    /// real `NSMenuItem`, exercising `MainMenuBuilder`'s wiring end to
+    /// end) — only the READ side of the assertion goes through the file,
+    /// because that's the half XCUITest is documented to be unreliable
+    /// at on this SDK (see `readAdblockState`'s doc).
+    ///
+    /// Test isolation: `NyxSettings`' backing UserDefaults key is
+    /// per-BUNDLE, not per-db-name (its own doc), so a value left over
+    /// from ANY earlier test/run in this bundle would otherwise leak in.
+    /// `-nyx-reset-adblock-state` (first launch only) pins a known
+    /// starting point; the second launch omits it deliberately, because
+    /// that omission is exactly what's under test — does the flip
+    /// survive an app relaunch with nothing re-asserting it?
+    func testAdblockMenuTogglePersists() throws {
+        let dbName = freshDatabaseName()
+        let firstDump = adblockStateDumpURL()
+        var app = launch(dbName: dbName, extraArguments: [
+            "-nyx-reset-adblock-state",
+            "-nyx-dump-adblock-state", firstDump.path
+        ])
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(try readAdblockState(at: firstDump)["global"], "true",
+                       "reset arg must pin the known default (blocking ON) before any toggle")
+
+        // Drive the real menu end to end: View > Block Ads. Top-level
+        // menu-bar entries and their submenu's items are lazily
+        // published, so the submenu must actually be opened before
+        // `menuItems["Block Ads"]` resolves to anything. Menu-bar clicks
+        // need the app frontmost (macOS shows only the active app's menu
+        // bar) — precedent elsewhere in this file for menu-driven actions.
+        app.activate()
+        app.menuBarItems["View"].click()
+        let blockAds = app.menuItems["Block Ads"]
+        XCTAssertTrue(blockAds.waitForExistence(timeout: 5))
+        blockAds.click()
+
+        // toggleGlobalAdblock() writes synchronously (NyxSettings'
+        // nonmutating UserDefaults set) before this returns, but give the
+        // menu's dismiss animation a beat before terminating.
+        RunLoop.current.run(until: Date().addingTimeInterval(1.0))
+        app.terminate()
+
+        let secondDump = adblockStateDumpURL()
+        app = launch(dbName: dbName, withFixture: false, extraArguments: [
+            "-nyx-dump-adblock-state", secondDump.path
+        ])
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(try readAdblockState(at: secondDump)["global"], "false",
+                       "the OFF flip must survive a relaunch with no reset arg present")
+    }
+
+    /// Design decision (recorded per the task-8 brief's discussion of the
+    /// offline constraint): the fixture page loads via
+    /// `WKWebView.loadHTMLString(_:baseURL:)` (see
+    /// `NyxWindowCoordinator.loadTestHTML`) — there is no real navigation,
+    /// so `BrowserTab.currentHost` is and stays `nil`. Seeding a fake host
+    /// without a real navigation would misrepresent what the app actually
+    /// observed, so this test does NOT fake one.
+    ///
+    /// Instead it pins the strongest claim that's true OFFLINE: with a
+    /// nil-host tab selected, "Block Ads on This Site" must be GATED OFF
+    /// (`canToggleSiteAdblock == false`) — exactly the guard
+    /// `NyxWindowCoordinator.canToggleSiteAdblock` documents, and exactly
+    /// what a user would see (a disabled menu item) for any tab that
+    /// hasn't committed a navigation yet. The override-FLIP behavior for
+    /// a real host is already pinned at the unit level against
+    /// `NyxWindowCoordinator`'s static decision functions directly
+    /// (`AdblockMenuToggleTests`), with a real on-disk `SiteOverrideStore`
+    /// — this UI test's job is only to confirm the live app wires that
+    /// same gate through to the coordinator surface the menu reads,
+    /// which is exactly what the dump's `canToggleSite` line reports.
+    func testPerSiteToggleReflectsInMenu() throws {
+        let dump = adblockStateDumpURL()
+        let app = launch(dbName: freshDatabaseName(), extraArguments: [
+            "-nyx-dump-adblock-state", dump.path
+        ])
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.windows["Nyx Fixture"].waitForExistence(timeout: 15))
+
+        let state = try readAdblockState(at: dump)
+        XCTAssertEqual(state["canToggleSite"], "false",
+                       "a fixture tab has no committed navigation (nil host) — " +
+                       "the per-site toggle must stay gated off, matching what " +
+                       "the disabled menu item shows the user")
     }
 }

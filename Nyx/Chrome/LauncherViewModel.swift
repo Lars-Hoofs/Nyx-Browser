@@ -109,7 +109,10 @@ final class LauncherViewModel {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         var historyEntries: [HistoryEntry] = []
         do {
-            historyEntries = trimmed.isEmpty
+            // Short-query fastpath: length-1 queries skip FTS, which performs
+            // expensive prefix scans on single characters. Instead, rely on
+            // tab/command matching and recent history only.
+            historyEntries = trimmed.isEmpty || trimmed.count == 1
                 ? try history.recent(limit: Self.historyLimit)
                 : try history.search(trimmed, limit: Self.historyLimit)
         } catch {

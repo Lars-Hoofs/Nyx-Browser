@@ -90,6 +90,51 @@ public final class NyxDatabase {
                 t.tokenizer = .unicode61()
             }
         }
+        // v4 (M5): site overrides (default blocking ON; a row exists only
+        // for hosts overridden to OFF — see SiteOverrideStore) plus a
+        // carried-over M4 perf item: rebuild `history_fts` with a prefix
+        // index (`prefix='2 3'`) so 2- and 3-character prefix searches are
+        // index-served instead of a full term scan.
+        //
+        // Verified incantation for rebuilding a GRDB `synchronize(withTable:)`
+        // external-content FTS5 table without losing rows:
+        //   1. `db.drop(table:)` the existing virtual table (plain
+        //      `DROP TABLE`, valid for FTS5 virtual tables).
+        //   2. `db.dropFTS5SynchronizationTriggers(forTable:)` — dropping
+        //      the virtual table does NOT drop the `__<table>_ai/_ad/_au`
+        //      triggers GRDB created on the content table; per GRDB's own
+        //      doc comment on `synchronize(withTable:)`, those triggers
+        //      outlive the FTS table and must be dropped explicitly, or
+        //      they keep referencing the (now-gone) old `history_fts` and
+        //      break every future insert/update/delete on `history_entry`.
+        //   3. Recreate the virtual table with the SAME
+        //      `synchronize(withTable:)` config (+ the new `prefixes`
+        //      option). No explicit repopulation step is needed: GRDB's
+        //      `didCreate` hook for a `.synchronized` FTS5 table
+        //      automatically runs
+        //      `INSERT INTO history_fts(history_fts) VALUES('rebuild')`
+        //      right after (re)creating the sync triggers (see
+        //      `FTS5.database(_:didCreate:using:)`), which repopulates the
+        //      new table from every existing `history_entry` row. Verified
+        //      by test: seeding a v1–v3-only database directly, then
+        //      opening it through `NyxDatabase` (running v4 alone) and
+        //      confirming search still finds the pre-existing row.
+        migrator.registerMigration("v4") { db in
+            try db.create(table: "site_override") { t in
+                t.column("host", .text).primaryKey()
+                t.column("adblockDisabled", .integer).notNull()
+            }
+
+            try db.drop(table: "history_fts")
+            try db.dropFTS5SynchronizationTriggers(forTable: "history_fts")
+            try db.create(virtualTable: "history_fts", using: FTS5()) { t in
+                t.synchronize(withTable: "history_entry")
+                t.column("url")
+                t.column("title")
+                t.tokenizer = .unicode61()
+                t.prefixes = [2, 3]
+            }
+        }
         return migrator
     }
 }

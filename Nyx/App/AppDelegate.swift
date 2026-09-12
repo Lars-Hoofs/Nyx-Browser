@@ -11,6 +11,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             let coordinator = try NyxWindowCoordinator()
             self.coordinator = coordinator
+
+            #if DEBUG
+            // Task 8: applied BEFORE anything else touches the toggle —
+            // including coordinator.start() below, whose
+            // persistence.restoreOrBootstrap() restores/creates tabs
+            // that attach and immediately evaluate content rules
+            // against adblockEnabled — so a leftover value from an
+            // earlier UITest run in this same bundle's UserDefaults
+            // domain (per-bundle, NOT per-db-name — see NyxSettings'
+            // doc) never leaks into a test that needs a known starting
+            // state.
+            if ProcessInfo.processInfo.arguments.contains("-nyx-reset-adblock-state") {
+                coordinator.settings.adblockEnabled = true
+            }
+            #endif
+
             coordinator.start()
 
             #if DEBUG
@@ -19,6 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if let seed = seedHistoryLaunchArgument() {
                 coordinator.seedHistory(url: seed.url, title: seed.title)
+            }
+            if let dumpPath = dumpAdblockStateLaunchArgument() {
+                dumpAdblockState(to: dumpPath, coordinator: coordinator)
             }
             #endif
         } catch {
@@ -50,6 +69,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func focusNextPane(_ sender: Any?) { coordinator?.focusNextPane() }
     @objc func focusPreviousPane(_ sender: Any?) { coordinator?.focusPreviousPane() }
     @objc func openLauncher(_ sender: Any?) { coordinator?.showLauncher() }
+    @objc func toggleBlockAds(_ sender: Any?) { coordinator?.toggleGlobalAdblock() }
+    @objc func toggleBlockAdsOnThisSite(_ sender: Any?) { coordinator?.toggleSiteAdblock() }
 
     #if DEBUG
     private func testHTMLLaunchArgument() -> String? {
@@ -74,6 +95,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let title = String(value[value.index(after: separatorIndex)...])
         return (url, title)
     }
+
+    /// Task 8: `-nyx-dump-adblock-state <path>` — pre-authorized fallback
+    /// for reading adblock state in UI tests. XCUITest's read of an
+    /// `NSMenuItem`'s checkmark `state` is documented (global-
+    /// constraints.md's flake note; M3-T11's report) as flaky on this
+    /// SDK for other AX surfaces, and the menu items here only validate
+    /// (and thus set `.state`) while their menu is actually open — so
+    /// rather than gamble on that path, this writes the coordinator's
+    /// OWN state directly to a file inside the app's sandbox container,
+    /// which the (unsandboxed) UI-test runner can read straight back,
+    /// exactly like `tearDownWithError`'s direct container access.
+    private func dumpAdblockStateLaunchArgument() -> String? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let flagIndex = args.firstIndex(of: "-nyx-dump-adblock-state"),
+              args.index(after: flagIndex) < args.count else { return nil }
+        return args[args.index(after: flagIndex)]
+    }
+
+    /// Writes `key=value` lines covering both the global toggle and the
+    /// per-site gate/checkmark, so one dump mechanism serves both new UI
+    /// tests. Best-effort (`try?`) — a failed dump fails the reading test
+    /// via a missing file, never the app.
+    private func dumpAdblockState(to path: String, coordinator: NyxWindowCoordinator) {
+        let url = URL(fileURLWithPath: path)
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let contents = """
+        global=\(coordinator.adblockEnabled)
+        canToggleSite=\(coordinator.canToggleSiteAdblock)
+        siteEnabled=\(coordinator.siteAdblockEnabled)
+
+        """
+        try? contents.write(to: url, atomically: true, encoding: .utf8)
+    }
     #endif
 }
 
@@ -88,6 +143,12 @@ extension AppDelegate: NSMenuItemValidation {
         case #selector(splitWithNextTab(_:)): return coordinator?.canSplit ?? false
         case #selector(breakUpSplit(_:)), #selector(focusNextPane(_:)), #selector(focusPreviousPane(_:)):
             return coordinator?.isInSplit ?? false
+        case #selector(toggleBlockAds(_:)):
+            menuItem.state = (coordinator?.adblockEnabled ?? true) ? .on : .off
+            return true
+        case #selector(toggleBlockAdsOnThisSite(_:)):
+            menuItem.state = (coordinator?.siteAdblockEnabled ?? true) ? .on : .off
+            return coordinator?.canToggleSiteAdblock ?? false
         default: return true
         }
     }

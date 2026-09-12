@@ -6,6 +6,7 @@ import NyxCore
 /// Same spy pattern as TabManagerMediaTests (that file's spy is private
 /// to it): records media-suspension calls so close-path tests can assert
 /// survivors of a split are never suspended.
+@MainActor
 private final class CloseSpyWebView: WKWebView {
     var recordedSuspensions: [Bool] = []
 
@@ -16,7 +17,6 @@ private final class CloseSpyWebView: WKWebView {
     }
 }
 
-@MainActor
 private final class CloseSpyWebViewFactory: WebViewFactory {
     override func makeWebView(adopting configuration: WKWebViewConfiguration) -> WKWebView {
         CloseSpyWebView(frame: .zero, configuration: configuration)

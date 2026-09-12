@@ -19,7 +19,11 @@ hibernation, popups, menus.
 Milestone M4 (launcher & history): ⌘K launcher with tabs/history/commands
 and URL fallthrough, FTS5 history with frecency ranking.
 
-Next: M5 — adblock.
+Milestone M5 (adblock): EasyList + EasyPrivacy bundled snapshots, converted
+via SafariConverterLib, compiled + content-addressed-cached via
+WKContentRuleListStore, global "Block Ads" + per-site toggle in the View menu.
+
+Next: M6 — downloads.
 
 ## Build
 

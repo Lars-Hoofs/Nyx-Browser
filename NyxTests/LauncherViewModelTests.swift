@@ -277,4 +277,44 @@ final class LauncherViewModelTests: XCTestCase {
         XCTAssertEqual(vm.executeSelected(inNewTab: true), .run(.closeOtherTabs),
                        "commands have no new-tab variant")
     }
+
+    // MARK: - Short-query fastpath
+
+    func testSingleCharQueryUsesRecentHistoryFastpath() throws {
+        // Set up: create tabs and history. The single-character query path
+        // uses recent() instead of search(), avoiding expensive FTS prefix scans.
+        addTab(title: "Current", url: "https://current.example", select: true)
+        let tabX = addTab(title: "Xray", url: "https://x.example")
+        // History: most recent first, then older. "Y Old" and "Z Older" contain
+        // no "x" at all — an FTS search("x") would exclude them, so their
+        // presence in the results is the distinguishing signal that recent()
+        // (not search()) produced the history results.
+        try store.recordVisit(url: "https://x-history.example/new", title: "X New", at: Date(timeIntervalSinceNow: -100))
+        try store.recordVisit(url: "https://y-history.example/old", title: "Y Old", at: Date(timeIntervalSinceNow: -3600))
+        try store.recordVisit(url: "https://z-history.example/older", title: "Z Older", at: Date(timeIntervalSinceNow: -7200))
+
+        let vm = makeViewModel()
+        vm.query = "x"
+
+        // For a length-1 query, results come from:
+        // 1. open tabs matching "x" (the Xray tab)
+        // 2. recent history (time-ordered, not FTS-ranked) — the ranker passes
+        //    non-empty-query history through unfiltered, so even entries that
+        //    don't contain "x" surface here
+        // 3. commands (if any match)
+        XCTAssertTrue(tabIDs(vm.results).contains(tabX.id), "matching tab should appear")
+        XCTAssertTrue(vm.results.count > 1, "results should include tabs and recent history")
+
+        let historyURLs: [String] = vm.results.compactMap {
+            if case .history(let entry) = $0 { return entry.url }
+            return nil
+        }
+        // These two entries contain no "x" character anywhere in title or URL.
+        // If the length-1 fastpath were reverted to FTS search("x"), neither
+        // would appear — their presence proves recent() ran, not search().
+        XCTAssertTrue(historyURLs.contains("https://y-history.example/old"),
+                      "non-matching recent entry 'Y Old' should surface via recent(), proving FTS search() did not run")
+        XCTAssertTrue(historyURLs.contains("https://z-history.example/older"),
+                      "non-matching recent entry 'Z Older' should surface via recent(), proving FTS search() did not run")
+    }
 }
