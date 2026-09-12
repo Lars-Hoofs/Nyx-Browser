@@ -81,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func openLauncher(_ sender: Any?) { coordinator?.showLauncher() }
     @objc func toggleBlockAds(_ sender: Any?) { coordinator?.toggleGlobalAdblock() }
     @objc func toggleBlockAdsOnThisSite(_ sender: Any?) { coordinator?.toggleSiteAdblock() }
+    @objc func toggleDownloads(_ sender: Any?) { coordinator?.toggleDownloadsPopover() }
 
     #if DEBUG
     /// M6 Task 4: `-nyx-download-dir <path>` — routes downloads into an

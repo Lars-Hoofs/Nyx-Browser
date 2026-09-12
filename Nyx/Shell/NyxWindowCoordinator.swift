@@ -31,6 +31,15 @@ final class NyxWindowCoordinator {
     private var splitViewController: NyxSplitViewController!
     private var windowController: NyxWindowController!
     private var launcherPanel: LauncherPanelController!
+    /// M6 downloads popover (Task 5, spec §5.7). Lazily created —
+    /// `ensureDownloadsPopover()` is the only constructor.
+    private var downloadsPopover: NSPopover?
+    /// The sidebar downloads button's backing `NSView`, resolved once by
+    /// `SidebarView`'s `AnchorReporter` (see that file's doc) — the anchor
+    /// `toggleDownloadsPopover()` shows the popover relative to. `weak`:
+    /// the sidebar owns the view's real lifetime; this is purely a
+    /// reference to anchor against, never a retain.
+    private weak var downloadsButtonAnchor: NSView?
     /// The view model behind the CURRENTLY VISIBLE launcher — the target
     /// of the panel's onKeyDown hook. Set by makeLauncherView() on each
     /// show, cleared on dismiss; nil whenever the panel is hidden.
@@ -116,7 +125,11 @@ final class NyxWindowCoordinator {
         let downloads = downloadManager
         manager.onDownloadStarted = { downloads.adopt($0) }
 
-        let sidebar = NSHostingController(rootView: SidebarView(manager: manager))
+        let sidebar = NSHostingController(rootView: SidebarView(
+            manager: manager,
+            downloadManager: downloadManager,
+            onToggleDownloads: { [unowned self] in self.toggleDownloadsPopover() },
+            onDownloadsAnchorResolved: { [weak self] view in self?.downloadsButtonAnchor = view }))
         splitViewController = NyxSplitViewController(sidebar: sidebar, content: canvas)
         windowController = NyxWindowController(contentViewController: splitViewController)
 
@@ -473,6 +486,67 @@ final class NyxWindowCoordinator {
             manager.newSpace(named: "Space \(manager.spaces.count + 1)")
             manager.newTab()
         }
+    }
+
+    // MARK: - Downloads popover (Task 5, spec §5.7)
+
+    /// Shows/hides the downloads popover, anchored to the sidebar's
+    /// downloads button. `NSPopover.behavior = .transient` handles every
+    /// dismissal path itself (click-outside, Esc) — unlike
+    /// `LauncherPanelController`, no key-event monitor is needed here
+    /// (plan-binding: simpler lifecycle, by design).
+    func toggleDownloadsPopover() {
+        if let downloadsPopover, downloadsPopover.isShown {
+            downloadsPopover.close()
+            return
+        }
+        guard let anchor = downloadsButtonAnchor else {
+            // Should not happen in practice — SidebarView's AnchorReporter
+            // resolves on the sidebar's first layout pass, well before any
+            // menu/click can reach this method — but never crash a menu
+            // action over a not-yet-resolved anchor.
+            NSLog("NyxWindowCoordinator: downloads button anchor not resolved yet; cannot show the downloads popover.")
+            return
+        }
+        let popover = ensureDownloadsPopover()
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
+    }
+
+    private func ensureDownloadsPopover() -> NSPopover {
+        if let downloadsPopover { return downloadsPopover }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.appearance = NSAppearance(named: .vibrantDark)
+        popover.contentViewController = NSHostingController(rootView: DownloadsPopover(
+            manager: downloadManager,
+            onRetry: { [weak self] id in self?.retryDownload(id: id) }))
+        downloadsPopover = popover
+        return popover
+    }
+
+    /// Retry needs a *host* `WKWebView` to call `resumeDownload`/
+    /// `startDownload` on (spec §5.7/§6) — prefers the selected tab's
+    /// webview, else any tab that still has a live one, else NSLog +
+    /// no-op (never a dialog, never a crash — every tab could be
+    /// hibernated).
+    func retryDownload(id: String) {
+        guard let host = Self.retryHostWebView(
+            selected: manager.selectedTab?.webView,
+            tabs: manager.tabs.map { $0.webView }
+        ) else {
+            NSLog("NyxWindowCoordinator: no live webview available to retry download %@; ignoring.", id)
+            return
+        }
+        downloadManager.retry(id: id, host: host)
+    }
+
+    /// Pure host-selection, extracted per `shouldMoveResponder`'s
+    /// precedent above — `WindowCoordinatorFocusTests` pins this directly
+    /// without constructing a full coordinator. `WKWebView`, unlike
+    /// `WKDownload`, has a public initializer, so real instances can stand
+    /// in for "live" tabs in a test.
+    static func retryHostWebView(selected: WKWebView?, tabs: [WKWebView?]) -> WKWebView? {
+        selected ?? tabs.compactMap { $0 }.first
     }
 
     // MARK: - Split menu plumbing (Task 10 wires the menu items)
