@@ -504,21 +504,32 @@ final class NyxWindowCoordinator {
         // window (NSSplitViewController pulls the collapsed item's view
         // out of the hierarchy); showing a popover against a windowless
         // view throws an uncaught NSException (final review, C-1 —
-        // empirically reproduced). Mirror focusAddress's collapsed-sidebar
-        // reveal (above, "M1 review") exactly, INCLUDING its timing: that
-        // call is synchronous, no Task {}/DispatchQueue defer, and relies
-        // on isCollapsed's animator-proxy setter applying the layout
-        // change (arranged-subview reattachment) immediately, only
-        // animating the resulting frame/divider motion. A fixed one-tick
-        // defer here would be both unnecessary (reattachment is
-        // synchronous) and unreliable (the visual animation itself runs
-        // ~0.25s, far longer than one runloop tick) — so this stays
-        // synchronous like focusAddress, with the `anchor.window != nil`
-        // check below as a belt against any animator-timing state this
-        // reasoning missed.
+        // empirically reproduced). An earlier revision un-collapsed
+        // synchronously (mirroring focusAddress) and relied on the
+        // animator-proxy setter reattaching the view immediately — the
+        // first live gate run DISPROVED that: the `anchor.window` guard
+        // below refused (graceful, no crash, but no popover either).
+        // Reattachment under the animator is not observable-synchronous
+        // for popover-anchoring purposes, so the un-collapse now runs in
+        // an explicit animation group and the popover presents in its
+        // completion — deterministic, and keeps the reveal animated.
+        // (focusAddress gets away with the synchronous form because a
+        // text field's becomeFirstResponder needs no anchor geometry.)
         if let item = splitViewController.splitViewItems.first, item.isCollapsed {
-            item.animator().isCollapsed = false
+            NSAnimationContext.runAnimationGroup({ _ in
+                item.animator().isCollapsed = false
+            }, completionHandler: { [weak self] in
+                self?.presentDownloadsPopover()
+            })
+            return
         }
+        presentDownloadsPopover()
+    }
+
+    /// The guarded show-half of `toggleDownloadsPopover()` — split out so
+    /// the collapsed-sidebar path above can call it from the un-collapse
+    /// animation's completion (C-1 gate-run fix).
+    private func presentDownloadsPopover() {
         guard let anchor = downloadsButtonAnchor, anchor.window != nil else {
             // Should not happen in practice — SidebarView's AnchorReporter
             // resolves on the sidebar's first layout pass, well before any
