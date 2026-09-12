@@ -158,6 +158,15 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         }
         transition(id: id, to: .finished) { record in
             record.finishedAt = Date()
+            // Final review, I-1: `makeRunningRecord` seeds 0/-1 and nothing
+            // ever wrote real numbers over them, so every finished
+            // download's popover subtitle read "Zero KB" forever
+            // (persisted, not just a display glitch). `download.progress`
+            // is still live here — `untrack` (which drops our only
+            // reference to `download`) runs AFTER this closure returns —
+            // so capture the final byte counts into the record now.
+            record.bytesReceived = download.progress.completedUnitCount
+            record.bytesExpected = download.progress.totalUnitCount
         }
         untrack(id: id, download: download)
         onItemsChanged?()
@@ -173,6 +182,11 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         transition(id: id, to: .failed) { record in
             record.resumeData = resumeData
             record.errorMessage = error.localizedDescription
+            // I-1 (partial-bytes honesty): a failed download may still have
+            // received some bytes before it died — persist what actually
+            // arrived rather than leaving the 0/-1 seed in place.
+            record.bytesReceived = download.progress.completedUnitCount
+            record.bytesExpected = download.progress.totalUnitCount
         }
         untrack(id: id, download: download)
         onItemsChanged?()
@@ -188,6 +202,11 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             guard let self else { return }
             self.transition(id: id, to: .cancelled) { record in
                 record.resumeData = resumeData
+                // I-1 (partial-bytes honesty): same capture as
+                // finish/fail — a cancelled download keeps whatever it
+                // had already received rather than reverting to 0/-1.
+                record.bytesReceived = download.progress.completedUnitCount
+                record.bytesExpected = download.progress.totalUnitCount
             }
             self.untrack(id: id, download: download)
             self.onItemsChanged?()

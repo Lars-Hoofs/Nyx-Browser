@@ -21,6 +21,14 @@ import NyxCore
 /// `makeRunningRecord`) — the same "re-compose pieces honestly" approach
 /// as `AdblockMenuToggleTests`.
 ///
+/// I-1 (final review) note: the same gap applies to the byte-count capture
+/// those three delegate paths now perform (`download.progress
+/// .completedUnitCount`/`totalUnitCount` written into the transitioning
+/// record) — a real `Progress` with non-zero counts needs a real
+/// `WKDownload` in flight, so that capture itself is queued-UI-run
+/// territory too. What this suite pins instead is the seam it writes
+/// through: `testTransitionMutateClosureLandsByteCounts`, below.
+///
 /// All file-based assertions write inside a per-test temp directory under
 /// `FileManager.default.temporaryDirectory` (this test bundle's own
 /// container) — never the real `~/Downloads`.
@@ -162,6 +170,38 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(storedWhileRunning?.bytesExpected, -1)
         XCTAssertEqual(storedWhileRunning?.state, .running,
                        "bytes only ever move via a transition's mutate closure — never a bare update")
+    }
+
+    /// I-1 (final review): `downloadDidFinish`/`didFailWithError`/`cancel`'s
+    /// completion now each capture `download.progress.completedUnitCount`/
+    /// `totalUnitCount` into the mutate closure they hand `transition(id:
+    /// to:mutate:)` — this seam is what actually lands those bytes into the
+    /// record and the store. Driving `WKDownload.progress` itself needs a
+    /// real `WKDownload`, which only WebKit can construct (this file's own
+    /// honesty header, above) — that half stays queued-UI-run territory
+    /// (`testDownloadCompletesAndShowsInPopover` observes a real finish,
+    /// but has no `nyx.downloads.*` a11y surface for byte counts either,
+    /// so it can't pin this by itself — see that test's own doc comment).
+    /// What CAN be pinned here, honestly, is the seam every one of those
+    /// three call sites shares: a `transition` mutate closure that writes
+    /// non-zero/non--1 byte counts must have them land in `items` AND in
+    /// the store — exactly the shape those three fixes rely on.
+    func testTransitionMutateClosureLandsByteCounts() throws {
+        let record = DownloadManager.makeRunningRecord(url: URL(string: "https://example.com/a.zip")!)
+        manager.seedForTesting(record)
+
+        manager.transition(id: record.id, to: .finished) { r in
+            r.bytesReceived = 2048
+            r.bytesExpected = 2048
+        }
+
+        XCTAssertEqual(manager.items.first?.record.bytesReceived, 2048,
+                       "the transition's mutate closure must be able to overwrite the 0 seed in memory")
+        XCTAssertEqual(manager.items.first?.record.bytesExpected, 2048)
+
+        let stored = try store.all().first { $0.id == record.id }
+        XCTAssertEqual(stored?.bytesReceived, 2048, "and persist it — the popover subtitle reads from the store on relaunch")
+        XCTAssertEqual(stored?.bytesExpected, 2048)
     }
 
     // MARK: - decideDestination's naming: isFilenameTaken wraps a FULL-PATH check
