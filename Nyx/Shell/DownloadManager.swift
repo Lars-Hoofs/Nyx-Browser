@@ -263,6 +263,26 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     private func finishRetry(id: String, download: WKDownload) {
         pendingRetries.remove(id)
         download.delegate = self
+        // M-1 (final review, folded): if the user removed this row
+        // (`remove(id:)`) during the pending-retry window — between
+        // `retry(id:)` issuing the resume/fresh-start call and THIS
+        // completion firing — there is no item left to adopt the new
+        // `WKDownload` into. `remove(id:)` only refuses to remove a
+        // `.running` row; a `.failed`/`.cancelled` row mid-retry is still
+        // removable, so nothing upstream prevents this. Without this
+        // guard the download would run headless forever: tracked nowhere,
+        // with no UI and no store row to land its delegate callbacks in.
+        // Cancel it instead. The delegate assignment above still has to
+        // come first (same silent-cancel rule as `adopt(_:)`/`retry`) —
+        // WebKit would otherwise auto-cancel it out from under us anyway,
+        // but relying on that would leave this branch undocumented.
+        guard items.contains(where: { $0.id == id }) else {
+            NSLog("DownloadManager: finishRetry(id:) for download %@ found no matching item (removed during retry); cancelling the orphaned download.", id)
+            download.cancel { _ in }
+            untrack(id: id, download: download)
+            pendingRetries.remove(id)
+            return
+        }
         track(download, id: id)
         transition(id: id, to: .running) { record in
             record.resumeData = nil

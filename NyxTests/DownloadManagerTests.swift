@@ -29,6 +29,17 @@ import NyxCore
 /// territory too. What this suite pins instead is the seam it writes
 /// through: `testTransitionMutateClosureLandsByteCounts`, below.
 ///
+/// M-1 (final review, folded) note: same gap again for `finishRetry`'s
+/// remove-during-pending-retry orphan guard (`download.cancel` +
+/// `untrack` when the item is gone by the time a real host's completion
+/// fires) — `finishRetry` only ever runs from a real `WKDownload`
+/// completion, so the guard's cancel/untrack branch itself is
+/// queued-UI-run territory too. What IS pinned here, extending the
+/// `SpyDownloadHost` pattern below (which already holds `retry`'s async
+/// window open by never calling its completion handler): that
+/// `remove(id:)` cleanly drops a row DURING that exact window — see
+/// `testRemoveDuringPendingRetryDropsItem`.
+///
 /// All file-based assertions write inside a per-test temp directory under
 /// `FileManager.default.temporaryDirectory` (this test bundle's own
 /// container) — never the real `~/Downloads`.
@@ -389,5 +400,37 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(host.resumeCallCount, 0)
         XCTAssertEqual(manager.items.first?.record.state, .failed,
                        "state must not change until finishRetry actually runs")
+    }
+
+    /// M-1 (final review, folded): pins the testable half of the
+    /// remove-during-pending-retry scenario `finishRetry`'s new orphan
+    /// guard exists for. `finishRetry` itself only ever runs from a real
+    /// `WKDownload` completion (only WebKit can construct one — this
+    /// file's own honesty header, above), so the guard's
+    /// `download.cancel`/`untrack` branch is exercised only by the
+    /// queued UI run, exactly like `adopt(_:)` and the delegate glue
+    /// methods. `SpyDownloadHost` already holds `retry`'s async window
+    /// open (it never calls its completion handler), which is exactly
+    /// the window a user could remove the row in: the record is
+    /// `.failed`, not `.running`, so `remove(id:)`'s running-guard does
+    /// not protect it. This asserts that removal succeeds cleanly —
+    /// the row is gone, nothing crashes — which is the precondition
+    /// `finishRetry`'s guard has to detect whenever the still-pending
+    /// host completion eventually does fire.
+    func testRemoveDuringPendingRetryDropsItem() {
+        var record = DownloadManager.makeRunningRecord(url: URL(string: "https://example.com/a.zip")!)
+        record.state = .failed
+        record.resumeData = Data([0x01, 0x02]) // → RetryAction.resume
+        manager.seedForTesting(record)
+        let host = SpyDownloadHost(frame: .zero)
+
+        manager.retry(id: record.id, host: host) // reaches host, never resolves — pending window open
+        XCTAssertEqual(host.resumeCallCount, 1)
+
+        manager.remove(id: record.id)
+
+        XCTAssertTrue(manager.items.isEmpty,
+                       "remove(id:) must drop the row even mid-retry — its state is " +
+                       ".failed, not .running, so the running-only guard never fires")
     }
 }
