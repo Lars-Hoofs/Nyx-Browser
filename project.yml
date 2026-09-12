@@ -30,6 +30,8 @@ targets:
       properties:
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
+        # M6 downloads (spec §5.7): sandboxed write access to ~/Downloads.
+        com.apple.security.files.downloads.read-write: true
     info:
       path: Nyx/Info.plist
       properties:

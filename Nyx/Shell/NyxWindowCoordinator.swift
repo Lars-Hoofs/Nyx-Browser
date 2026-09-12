@@ -20,6 +20,10 @@ final class NyxWindowCoordinator {
     /// menu-toggle plumbing acts on both from the coordinator's surface.
     let ruleListManager: RuleListManager
     let siteOverrides: SiteOverrideStore
+    /// M6 downloads (spec §5.7). Internal (not private) because Task 5's
+    /// popover + sidebar badge consume `items`/actions from the
+    /// coordinator's surface.
+    let downloadManager: DownloadManager
     /// `nonmutating set` (see its doc) means this can stay a `let` even
     /// though Task 6's toggle flips it.
     let settings = NyxSettings()
@@ -35,7 +39,13 @@ final class NyxWindowCoordinator {
     /// selection transitions from same-tab re-fires (see closure comment).
     private var lastFocusedTabID: String?
 
-    init() throws {
+    /// `downloadDirectoryOverride` — non-nil only from AppDelegate's DEBUG
+    /// `-nyx-download-dir` parsing (UI tests must never write into the
+    /// real ~/Downloads; global constraint). Resolved by the CALLER before
+    /// this init runs, so the DownloadManager is born with the right
+    /// directory — the M5 `-nyx-reset-adblock-state` ordering lesson,
+    /// applied to construction instead of start().
+    init(downloadDirectoryOverride: URL? = nil) throws {
         let dbURL = DatabaseLocation.url()
         // One NyxDatabase connection backs both SessionStore and
         // HistoryStore (M4: they used to each open their own). Quarantine/
@@ -64,6 +74,16 @@ final class NyxWindowCoordinator {
         persistence = SessionPersistence(store: store, manager: manager)
         siteOverrides = SiteOverrideStore(database: database)
         ruleListManager = RuleListManager()
+        // M6 downloads (spec §5.7): DownloadStore shares the ONE
+        // NyxDatabase connection opened above — same single-connection
+        // rule as SessionStore/HistoryStore/SiteOverrideStore. The
+        // destination is the user's real Downloads folder (sandbox
+        // entitlement com.apple.security.files.downloads.read-write)
+        // unless the DEBUG launch arg redirected it.
+        downloadManager = DownloadManager(
+            store: DownloadStore(database: database),
+            destinationDirectory: downloadDirectoryOverride
+                ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0])
 
         // Adblock wiring (M5 spec §5.6): TabManager sees only closures —
         // never the store or the rule-list manager. Locals (not self)
@@ -86,6 +106,15 @@ final class NyxWindowCoordinator {
         ruleListManager.onReady = { [weak manager] in
             manager?.reevaluateContentRules(force: true)
         }
+
+        // Downloads funnel (spec §5.7): NavigationRelay didBecome → tab →
+        // TabManager → here → adopt, one synchronous chain — adopt's
+        // first statement assigns the WKDownload's delegate, and WebKit
+        // silently cancels a download left undelegated. Local capture
+        // (not self), same no-retain discipline as the adblock closures
+        // above.
+        let downloads = downloadManager
+        manager.onDownloadStarted = { downloads.adopt($0) }
 
         let sidebar = NSHostingController(rootView: SidebarView(manager: manager))
         splitViewController = NyxSplitViewController(sidebar: sidebar, content: canvas)
@@ -228,6 +257,14 @@ final class NyxWindowCoordinator {
     }
 
     func start() {
+        // ONCE contract: rebuildFromStore() runs exactly once per launch,
+        // HERE, before anything can start a download. It repairs rows the
+        // previous process abandoned as `running` (spec §5.7: in-flight
+        // downloads die with the app) and loads history — a second call
+        // after a download had started would flip that GENUINELY running
+        // row to interrupted and drop its live progress mirror. This is
+        // the single call site; nothing else may ever call it.
+        downloadManager.rebuildFromStore()
         // PRECONDITION (T4 review): bootstrap() must be called EXACTLY
         // ONCE per RuleListManager — it has no mid-flight cancellation
         // checkpoints, so a second call during an in-flight run can

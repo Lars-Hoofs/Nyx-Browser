@@ -46,6 +46,13 @@ final class TabManager: NSObject {
     /// for a tab already in `tabs`. The coordinator uses this to wire each
     /// tab into HistoryRecorder without special-casing restore.
     @ObservationIgnored var onTabCreated: ((BrowserTab) -> Void)?
+    /// M6 downloads funnel (spec §5.7): fired whenever ANY tab's
+    /// navigation became a WKDownload (NavigationRelay didBecome →
+    /// BrowserTab.onDownloadStarted → here). The coordinator routes it
+    /// into DownloadManager.adopt(_:), which assigns the download's
+    /// delegate as its first statement — the whole chain stays one
+    /// synchronous hop (WebKit silently cancels an undelegated download).
+    @ObservationIgnored var onDownloadStarted: ((WKDownload) -> Void)?
     /// M5 adblock seam: the coordinator injects the decision + apply/
     /// remove closures here (never RuleListManager or SiteOverrideStore
     /// themselves — TabManager stays store-free, matching its other
@@ -599,6 +606,15 @@ final class TabManager: NSObject {
             if let self, let tab, tab.id == self.selectedTabID {
                 self.onSelectionChange?(tab)   // keeps window title fresh
             }
+        }
+        // M6 downloads: same weak-self threading shape as onStateChange
+        // above. Reads self's CURRENT onDownloadStarted at fire time, so
+        // wiring order can't strand a tab (the coordinator installs its
+        // callback in init, but a tab created before it — or in a test
+        // that wires later — still forwards correctly). Synchronous
+        // passthrough, per the silent-cancel contract on the declaration.
+        tab.onDownloadStarted = { [weak self] download in
+            self?.onDownloadStarted?(download)
         }
         // Shared-controller marker generalization (final-review I-1):
         // `tab` just ACTED on `controller`. Invalidate every OTHER live

@@ -75,6 +75,15 @@ final class BrowserTab: Identifiable {
     /// non-last-acting sharer's marker stale regardless of which
     /// sharer happens to act last.
     @ObservationIgnored var onContentRulesActed: ((WKUserContentController) -> Void)?
+    /// Fired by NavigationRelay's two `didBecome` handlers the instant a
+    /// `.download` policy decision materializes as a WKDownload (M6 spec
+    /// §5.7). Wired by TabManager (registerCallbacks) — same closure-
+    /// injection shape as onContentRulesActed above — up to the
+    /// coordinator, whose DownloadManager.adopt(_:) assigns the
+    /// download's delegate as its first statement. The whole chain is
+    /// one synchronous hop: WebKit silently cancels a download that
+    /// leaves didBecome without a delegate (spec §5.7).
+    @ObservationIgnored var onDownloadStarted: ((WKDownload) -> Void)?
     /// The decision last acted on for the CURRENT webview's controller —
     /// the "override state differs" guard for didCommit re-evaluation.
     /// Reset to nil on attach/hibernate: a fresh factory webview has a
@@ -344,8 +353,14 @@ final class BrowserTab: Identifiable {
 /// verifies `tab.webView === webView` before forwarding, so a relay whose
 /// tab has since hibernated or re-attached a different webview is a no-op
 /// rather than delivering a stale navigation event.
+///
+/// M6 (spec §5.7) adds the two `decidePolicyFor` methods and the two
+/// `didBecome` download handlers. Internal (not `private`) since M6:
+/// the pure `shouldDownload` statics below are unit-tested via
+/// `@testable import Nyx` (DownloadPolicyTests) — nothing else about
+/// the type's ownership or lifetime changed.
 @MainActor
-private final class NavigationRelay: NSObject, WKNavigationDelegate {
+final class NavigationRelay: NSObject, WKNavigationDelegate {
     private weak var tab: BrowserTab?
 
     init(tab: BrowserTab) {
@@ -355,5 +370,87 @@ private final class NavigationRelay: NSObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard let tab, tab.webView === webView, let url = webView.url else { return }
         tab.navigationDidCommit(url)
+    }
+
+    // MARK: - Download policy (M6 spec §5.7)
+
+    /// HOT PATH — runs on EVERY navigation the browser ever makes (link
+    /// clicks, redirects, form posts). The ONLY behavioral delta versus
+    /// having no implementation at all: `shouldPerformDownload` (an
+    /// explicit download gesture, e.g. an anchor's `download` attribute)
+    /// turns into `.download`. Everything else is `.allow`, immediately
+    /// and unconditionally — no logging, no other work here, ever.
+    ///
+    /// Deliberately the 2-arg overload, NOT the `preferences:` variant:
+    /// WebKit calls the preferences overload INSTEAD of this one when
+    /// both exist (WKNavigationDelegate.h: "if you implement this method,
+    /// -webView:decidePolicyForNavigationAction:decisionHandler: will not
+    /// be called"), and taking that variant would make us responsible for
+    /// passing WKWebpagePreferences through on every navigation. We have
+    /// no per-navigation preferences to set, so the 2-arg form keeps
+    /// WebKit's own preferences handling untouched.
+    func webView(_ webView: WKWebView,
+                 decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        decisionHandler(navigationAction.shouldPerformDownload ? .download : .allow)
+    }
+
+    /// HOT PATH (every main/subframe response). `.download` only when the
+    /// response itself says so — un-renderable MIME type, or an explicit
+    /// Content-Disposition attachment; the default stays `.allow`.
+    func webView(_ webView: WKWebView,
+                 decidePolicyFor navigationResponse: WKNavigationResponse,
+                 decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        decisionHandler(Self.shouldDownload(navigationResponse) ? .download : .allow)
+    }
+
+    /// Spec §5.7 (binding, silent-cancel warning): WebKit cancels a
+    /// download that leaves this method without a delegate — so the
+    /// handoff is the FIRST statement. The chain is fully synchronous:
+    /// tab.onDownloadStarted → TabManager.onDownloadStarted → the
+    /// coordinator → DownloadManager.adopt(_:), whose own first statement
+    /// is `download.delegate = self`. No stale-webview guard here, on
+    /// purpose: the download is app-global the moment it exists, and
+    /// dropping it because the tab re-attached in between would BE the
+    /// silent cancel the spec warns about. (An unwired callback — tests
+    /// that never install one — does lose the download; production
+    /// wiring is unconditional in registerCallbacks.)
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction,
+                 didBecome download: WKDownload) {
+        tab?.onDownloadStarted?(download)
+    }
+
+    /// Same contract as the navigationAction variant above: handoff first,
+    /// synchronously, nothing else.
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse,
+                 didBecome download: WKDownload) {
+        tab?.onDownloadStarted?(download)
+    }
+
+    /// The response-policy decision (spec §5.7): download iff WebKit
+    /// cannot render the MIME type, or an HTTP response explicitly
+    /// declares itself an attachment. Thin WebKit-reading wrapper — the
+    /// testable logic lives in the overload below (a non-HTTP response
+    /// has no Content-Disposition, so it downloads only when
+    /// !canShowMIMEType, which is exactly what passing nil encodes).
+    static func shouldDownload(_ response: WKNavigationResponse) -> Bool {
+        shouldDownload(
+            canShowMIMEType: response.canShowMIMEType,
+            contentDisposition: (response.response as? HTTPURLResponse)?
+                .value(forHTTPHeaderField: "Content-Disposition"))
+    }
+
+    /// Pure header matrix (unit-tested without WebKit fakes —
+    /// DownloadPolicyTests): an un-renderable type always downloads; a
+    /// renderable one downloads only when the Content-Disposition value,
+    /// after trimming leading whitespace, case-insensitively starts with
+    /// "attachment" (RFC 6266 tokens are case-insensitive; parameters
+    /// like `; filename=x` ride behind the prefix). "inline", absent, or
+    /// anything else → allow.
+    static func shouldDownload(canShowMIMEType: Bool, contentDisposition: String?) -> Bool {
+        guard canShowMIMEType else { return true }
+        guard let contentDisposition else { return false }
+        return contentDisposition.drop(while: \.isWhitespace)
+            .lowercased().hasPrefix("attachment")
     }
 }
