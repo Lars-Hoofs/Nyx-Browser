@@ -23,7 +23,10 @@ Milestone M5 (adblock): EasyList + EasyPrivacy bundled snapshots, converted
 via SafariConverterLib, compiled + content-addressed-cached via
 WKContentRuleListStore, global "Block Ads" + per-site toggle in the View menu.
 
-Next: M6 — downloads.
+Milestone M6 (downloads): WKDownload policy funnel, resume-data persistence,
+sidebar popover.
+
+Next: M7 — vault.
 
 ## Build
 

@@ -1,10 +1,29 @@
 import SwiftUI
+import AppKit
 
 /// M2 sidebar: space switcher + address field + drag-reorderable tab rows
 /// for the selected space + new-tab button. Night-glass polish is M8 —
-/// styling stays on DesignTokens-level restraint.
+/// styling stays on DesignTokens-level restraint. M6 Task 5 adds the
+/// spec's "bottom card" downloads button (§8's sidebar anatomy).
 struct SidebarView: View {
     @Bindable var manager: TabManager
+    /// M6 downloads (spec §5.7): the badge dot only needs LIST
+    /// MEMBERSHIP (any item currently `.running`), which `@Observable`
+    /// already propagates through `items` — no per-byte progress
+    /// observation is needed here (that's `DownloadsPopover`'s job, and
+    /// it uses a different mechanism; see its file's doc).
+    @Bindable var downloadManager: DownloadManager
+    /// Routed to `NyxWindowCoordinator.toggleDownloadsPopover()` — this
+    /// view has no popover/coordinator access of its own, same
+    /// closure-only-seam discipline as every other sidebar action, which
+    /// all call directly into `manager` instead.
+    let onToggleDownloads: () -> Void
+    /// Fires once, the first time the downloads button's backing
+    /// `NSView` exists (via `AnchorReporter` below), so the coordinator
+    /// has a real AppKit anchor to show an `NSPopover` against — SwiftUI
+    /// content hosted inside `NSHostingController` has no AppKit view of
+    /// its own that the coordinator could reach any other way.
+    let onDownloadsAnchorResolved: (NSView) -> Void
 
     @State private var addressText = ""
     @FocusState private var addressFocused: Bool
@@ -62,6 +81,10 @@ struct SidebarView: View {
             tabList
 
             newTabButton
+
+            Divider().opacity(0.08)
+
+            downloadsButton
         }
         .padding(12)
         .onChange(of: manager.selectedTab?.urlString ?? "") { _, newValue in
@@ -285,6 +308,44 @@ struct SidebarView: View {
         .accessibilityIdentifier("nyx.newTabButton")
     }
 
+    /// The spec's "bottom card" (§8 sidebar anatomy): opens the downloads
+    /// popover, with a small accent dot while any item is `.running`.
+    /// Colors stay restricted to that one state signal, matching §8's
+    /// "colors only for states" rule.
+    private var downloadsButton: some View {
+        Button(action: onToggleDownloads) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.down.circle")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text("Downloads")
+                    .font(.system(size: 12, weight: .medium))
+                Spacer(minLength: 4)
+                if isDownloadRunning {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 6, height: 6)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.borderless)
+        .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(.white.opacity(0.07))
+        )
+        .background(AnchorReporter(onResolve: onDownloadsAnchorResolved))
+        .accessibilityIdentifier("nyx.downloads.button")
+    }
+
+    private var isDownloadRunning: Bool {
+        downloadManager.items.contains { $0.record.state == .running }
+    }
+
     private func navButton(_ symbol: String, enabled: Bool,
                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -348,4 +409,24 @@ private struct TabRow: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
     }
+}
+
+/// Reports the AppKit `NSView` backing a SwiftUI subtree up through
+/// `onResolve`, so AppKit-level code (`NSPopover.show(relativeTo:of:
+/// preferredEdge:)`, in this case) has a real anchor for a button that
+/// only exists as SwiftUI content hosted inside `NSHostingController` —
+/// there is no other way for `NyxWindowCoordinator` to reach it.
+/// `DispatchQueue.main.async` defers the callback past `makeNSView`'s own
+/// call frame; nothing here depends on that ordering today, but it keeps
+/// this seam safe for any future reuse where it might.
+private struct AnchorReporter: NSViewRepresentable {
+    let onResolve: (NSView) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { onResolve(view) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }

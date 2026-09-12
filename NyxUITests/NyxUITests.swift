@@ -86,6 +86,38 @@ final class NyxUITests: XCTestCase {
         return result
     }
 
+    /// Directories handed to `-nyx-download-dir`, so `tearDownWithError`
+    /// can best-effort remove them recursively (mirrors `usedDumpPaths`
+    /// above — same container-relative access pattern).
+    private var usedDownloadDirectories: [URL] = []
+
+    /// A fresh directory inside the app's OWN sandbox container's
+    /// `Data/tmp` (same pattern as `adblockStateDumpURL` above), so
+    /// `-nyx-download-dir` can point the sandboxed app at a location
+    /// this (unsandboxed) runner can also inspect directly afterwards.
+    /// M6 global constraint: downloads must NEVER touch the real
+    /// `~/Downloads` in a test. `AppDelegate.downloadDirectoryLaunchArgument`
+    /// creates the directory itself (best-effort) — this helper only
+    /// names it, it does not create it (T4 already owns creation; no
+    /// duplication).
+    private func freshDownloadDirectory() -> URL {
+        let url = Self.realUserHome
+            .appendingPathComponent(
+                "Library/Containers/com.larshoofs.Nyx/Data/tmp/downloads-\(UUID().uuidString)",
+                isDirectory: true)
+        usedDownloadDirectories.append(url)
+        return url
+    }
+
+    /// Number of entries currently in `directory`, or 0 if it doesn't
+    /// exist yet (the app creates it lazily on first launch) — used for
+    /// a bounded poll rather than asserting an exact filename, since
+    /// `WKDownload`'s `suggestedFilename` for a `data:` URL is
+    /// undocumented (see `NyxWindowCoordinator.startTestDownload`'s doc).
+    private func fileCount(in directory: URL) -> Int {
+        (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?.count ?? 0
+    }
+
     override func tearDownWithError() throws {
         // Best-effort cleanup: the app writes its UITest databases inside
         // its own sandbox container, which the (unsandboxed) test runner
@@ -103,6 +135,10 @@ final class NyxUITests: XCTestCase {
             try? FileManager.default.removeItem(at: url)
         }
         usedDumpPaths.removeAll()
+        for url in usedDownloadDirectories {
+            try? FileManager.default.removeItem(at: url)
+        }
+        usedDownloadDirectories.removeAll()
         try super.tearDownWithError()
     }
 
@@ -452,5 +488,160 @@ final class NyxUITests: XCTestCase {
                        "a fixture tab has no committed navigation (nil host) — " +
                        "the per-site toggle must stay gated off, matching what " +
                        "the disabled menu item shows the user")
+    }
+
+    // MARK: - Downloads (M6 Task 6)
+
+    /// Opens the downloads popover via the real menu (View ▸ Downloads,
+    /// ⌥⌘L's target) — same `app.activate()` + `menuBarItems`/`menuItems`
+    /// click path as `testAdblockMenuTogglePersists` above, for the same
+    /// reason: macOS only shows the frontmost app's menu bar, and the
+    /// submenu's items are lazily published until the submenu is opened.
+    private func openDownloadsPopover(in app: XCUIApplication) {
+        app.activate()
+        app.menuBarItems["View"].click()
+        let downloads = app.menuItems["Downloads"]
+        XCTAssertTrue(downloads.waitForExistence(timeout: 5))
+        downloads.click()
+    }
+
+    /// Design decision (recorded per the task-6 brief's pre-authorized
+    /// determinism note): `WKDownload.decideDestination`'s
+    /// `suggestedFilename` for a `data:` URL is undocumented in the SDK
+    /// headers (verified — no header text pins it), so neither test in
+    /// this section asserts an exact filename. Instead each polls the
+    /// download DIRECTORY for the appearance of ANY new file (via
+    /// `fileCount`) and the popover for the appearance of ANY
+    /// `nyx.downloads.row` — both hold regardless of what name WebKit
+    /// actually picks, and both are exactly what a user would observe
+    /// (a file lands, a row appears). No pre-authorized fallback was
+    /// needed: `startDownload(using:)` on a `data:` URL is the primary
+    /// design (`NyxWindowCoordinator.startTestDownload`), not the
+    /// blob/anchor-click or dump-file fallback — record this choice
+    /// explicitly since the plan calls it an open unknown; the queued
+    /// `make test-ui` run is the first real confirmation either way.
+    func testDownloadCompletesAndShowsInPopover() throws {
+        let downloadDir = freshDownloadDirectory()
+        let app = launch(dbName: freshDatabaseName(), extraArguments: [
+            "-nyx-download-dir", downloadDir.path,
+            "-nyx-start-test-download"
+        ])
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+
+        // The data: URL download is tiny and offline, but still async
+        // (decideDestination round-trips through the manager) — bounded
+        // poll rather than an immediate check.
+        let fileDeadline = Date().addingTimeInterval(15)
+        while fileCount(in: downloadDir) < 1 && Date() < fileDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertGreaterThanOrEqual(fileCount(in: downloadDir), 1,
+                                    "the test download must land a file in the " +
+                                    "in-container download directory")
+
+        openDownloadsPopover(in: app)
+
+        // Fresh query — the popover is transient (house convention:
+        // never hold a query resolved before the menu toggle across it).
+        let rows = app.descendants(matching: .any).matching(identifier: "nyx.downloads.row")
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertGreaterThanOrEqual(rows.count, 1)
+    }
+
+    /// Design decision (recorded per the task-6 brief): after relaunch,
+    /// `DownloadsPopoverModel`/`DownloadRow` expose a row's STATE only
+    /// through free-text subtitle rendering (`DownloadsPopoverModel
+    /// .subtitle`) and the row's explicit `accessibilityValue` is the
+    /// FILENAME, not the state (see `DownloadsPopover.swift`'s
+    /// `DownloadRow.body` — `.accessibilityValue(displayFilename)`
+    /// overrides any combined value with the filename alone). There is
+    /// no `nyx.downloads.*` a11y surface that cleanly exposes "finished"
+    /// vs. any other state independent of that free-text rendering, so
+    /// per the task-6 brief's own honesty clause this test does NOT
+    /// assert the row's state string. It asserts what IS exposed
+    /// cleanly and IS the real claim under test — that the row and its
+    /// downloaded file both survive a full relaunch with no
+    /// `-nyx-start-test-download` on the second launch, i.e. the
+    /// history came from `DownloadStore`/`rebuildFromStore()`, not from
+    /// a live in-memory download.
+    func testDownloadHistoryRestoredAfterRelaunch() throws {
+        let dbName = freshDatabaseName()
+        let downloadDir = freshDownloadDirectory()
+        var app = launch(dbName: dbName, extraArguments: [
+            "-nyx-download-dir", downloadDir.path,
+            "-nyx-start-test-download"
+        ])
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+
+        let fileDeadline = Date().addingTimeInterval(15)
+        while fileCount(in: downloadDir) < 1 && Date() < fileDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertGreaterThanOrEqual(fileCount(in: downloadDir), 1,
+                                    "precondition: the first launch must finish the " +
+                                    "test download before it is terminated")
+
+        // Give the store's upsert (fired from downloadDidFinish, already
+        // synchronous by the time decideDestination's file landed above)
+        // a beat, then quit cleanly — applicationWillTerminate also
+        // flushes the session, mirroring testSessionRestoresAcrossRelaunch.
+        RunLoop.current.run(until: Date().addingTimeInterval(1.0))
+        app.terminate()
+
+        app = launch(dbName: dbName, withFixture: false, extraArguments: [
+            "-nyx-download-dir", downloadDir.path
+        ])
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+
+        openDownloadsPopover(in: app)
+
+        let rows = app.descendants(matching: .any).matching(identifier: "nyx.downloads.row")
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10),
+                      "rebuildFromStore() must repopulate the row from the " +
+                      "persisted history — no live download exists on this launch")
+        XCTAssertGreaterThanOrEqual(rows.count, 1)
+
+        // The finished file itself must also still be on disk — the
+        // strongest offline-checkable proxy for "it really finished,
+        // not merely interrupted", without depending on any row-state
+        // a11y surface (see the doc comment above).
+        XCTAssertGreaterThanOrEqual(fileCount(in: downloadDir), 1)
+    }
+
+    /// C-1 pin (final review): a collapsed sidebar detaches the downloads
+    /// button anchor from the window — `NSSplitViewController` pulls the
+    /// collapsed item's view out of the hierarchy — so showing the
+    /// popover against that anchor threw an uncaught `NSException`
+    /// before `toggleDownloadsPopover()`'s fix (mirrors `focusAddress`'s
+    /// pre-existing collapsed-sidebar reveal, "M1 review"). This test
+    /// drives the exact same ⇧⌘S the user would press to collapse the
+    /// sidebar, confirms the collapse actually took — the sidebar's
+    /// `nyx.tabRow` outline (the same surface every other test in this
+    /// file uses to observe live sidebar content) disappearing is the
+    /// only clean signal this app exposes for "the sidebar is gone" —
+    /// then opens the downloads popover via the real View ▸ Downloads
+    /// menu item (same path `openDownloadsPopover` drives elsewhere) and
+    /// asserts BOTH that the popover appears AND that the app process is
+    /// still in the foreground: an uncaught `NSException` crash would
+    /// fail this test loudly (the app terminating) rather than the
+    /// popover query merely timing out.
+    func testDownloadsPopoverOpensWithCollapsedSidebar() throws {
+        let app = launch(dbName: freshDatabaseName())
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+        let rows = tabRows(in: app)
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
+
+        app.typeKey("s", modifierFlags: [.command, .shift])
+        XCTAssertTrue(rows.firstMatch.waitForNonExistence(timeout: 10),
+                      "\u{21e7}\u{2318}S must actually collapse the sidebar before " +
+                      "the popover open below is a meaningful test of C-1")
+
+        openDownloadsPopover(in: app)
+
+        let popover = app.descendants(matching: .any).matching(identifier: "nyx.downloads.popover")
+        XCTAssertTrue(popover.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(app.state, .runningForeground,
+                       "an uncaught NSException in toggleDownloadsPopover would " +
+                       "terminate the app rather than merely fail the query above")
     }
 }

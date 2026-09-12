@@ -20,6 +20,10 @@ final class NyxWindowCoordinator {
     /// menu-toggle plumbing acts on both from the coordinator's surface.
     let ruleListManager: RuleListManager
     let siteOverrides: SiteOverrideStore
+    /// M6 downloads (spec §5.7). Internal (not private) because Task 5's
+    /// popover + sidebar badge consume `items`/actions from the
+    /// coordinator's surface.
+    let downloadManager: DownloadManager
     /// `nonmutating set` (see its doc) means this can stay a `let` even
     /// though Task 6's toggle flips it.
     let settings = NyxSettings()
@@ -27,6 +31,15 @@ final class NyxWindowCoordinator {
     private var splitViewController: NyxSplitViewController!
     private var windowController: NyxWindowController!
     private var launcherPanel: LauncherPanelController!
+    /// M6 downloads popover (Task 5, spec §5.7). Lazily created —
+    /// `ensureDownloadsPopover()` is the only constructor.
+    private var downloadsPopover: NSPopover?
+    /// The sidebar downloads button's backing `NSView`, resolved once by
+    /// `SidebarView`'s `AnchorReporter` (see that file's doc) — the anchor
+    /// `toggleDownloadsPopover()` shows the popover relative to. `weak`:
+    /// the sidebar owns the view's real lifetime; this is purely a
+    /// reference to anchor against, never a retain.
+    private weak var downloadsButtonAnchor: NSView?
     /// The view model behind the CURRENTLY VISIBLE launcher — the target
     /// of the panel's onKeyDown hook. Set by makeLauncherView() on each
     /// show, cleared on dismiss; nil whenever the panel is hidden.
@@ -35,7 +48,13 @@ final class NyxWindowCoordinator {
     /// selection transitions from same-tab re-fires (see closure comment).
     private var lastFocusedTabID: String?
 
-    init() throws {
+    /// `downloadDirectoryOverride` — non-nil only from AppDelegate's DEBUG
+    /// `-nyx-download-dir` parsing (UI tests must never write into the
+    /// real ~/Downloads; global constraint). Resolved by the CALLER before
+    /// this init runs, so the DownloadManager is born with the right
+    /// directory — the M5 `-nyx-reset-adblock-state` ordering lesson,
+    /// applied to construction instead of start().
+    init(downloadDirectoryOverride: URL? = nil) throws {
         let dbURL = DatabaseLocation.url()
         // One NyxDatabase connection backs both SessionStore and
         // HistoryStore (M4: they used to each open their own). Quarantine/
@@ -64,6 +83,16 @@ final class NyxWindowCoordinator {
         persistence = SessionPersistence(store: store, manager: manager)
         siteOverrides = SiteOverrideStore(database: database)
         ruleListManager = RuleListManager()
+        // M6 downloads (spec §5.7): DownloadStore shares the ONE
+        // NyxDatabase connection opened above — same single-connection
+        // rule as SessionStore/HistoryStore/SiteOverrideStore. The
+        // destination is the user's real Downloads folder (sandbox
+        // entitlement com.apple.security.files.downloads.read-write)
+        // unless the DEBUG launch arg redirected it.
+        downloadManager = DownloadManager(
+            store: DownloadStore(database: database),
+            destinationDirectory: downloadDirectoryOverride
+                ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0])
 
         // Adblock wiring (M5 spec §5.6): TabManager sees only closures —
         // never the store or the rule-list manager. Locals (not self)
@@ -87,7 +116,20 @@ final class NyxWindowCoordinator {
             manager?.reevaluateContentRules(force: true)
         }
 
-        let sidebar = NSHostingController(rootView: SidebarView(manager: manager))
+        // Downloads funnel (spec §5.7): NavigationRelay didBecome → tab →
+        // TabManager → here → adopt, one synchronous chain — adopt's
+        // first statement assigns the WKDownload's delegate, and WebKit
+        // silently cancels a download left undelegated. Local capture
+        // (not self), same no-retain discipline as the adblock closures
+        // above.
+        let downloads = downloadManager
+        manager.onDownloadStarted = { downloads.adopt($0) }
+
+        let sidebar = NSHostingController(rootView: SidebarView(
+            manager: manager,
+            downloadManager: downloadManager,
+            onToggleDownloads: { [unowned self] in self.toggleDownloadsPopover() },
+            onDownloadsAnchorResolved: { [weak self] view in self?.downloadsButtonAnchor = view }))
         splitViewController = NyxSplitViewController(sidebar: sidebar, content: canvas)
         windowController = NyxWindowController(contentViewController: splitViewController)
 
@@ -228,6 +270,14 @@ final class NyxWindowCoordinator {
     }
 
     func start() {
+        // ONCE contract: rebuildFromStore() runs exactly once per launch,
+        // HERE, before anything can start a download. It repairs rows the
+        // previous process abandoned as `running` (spec §5.7: in-flight
+        // downloads die with the app) and loads history — a second call
+        // after a download had started would flip that GENUINELY running
+        // row to interrupted and drop its live progress mirror. This is
+        // the single call site; nothing else may ever call it.
+        downloadManager.rebuildFromStore()
         // PRECONDITION (T4 review): bootstrap() must be called EXACTLY
         // ONCE per RuleListManager — it has no mid-flight cancellation
         // checkpoints, so a second call during an in-flight run can
@@ -438,6 +488,133 @@ final class NyxWindowCoordinator {
         }
     }
 
+    // MARK: - Downloads popover (Task 5, spec §5.7)
+
+    /// Shows/hides the downloads popover, anchored to the sidebar's
+    /// downloads button. `NSPopover.behavior = .transient` handles every
+    /// dismissal path itself (click-outside, Esc) — unlike
+    /// `LauncherPanelController`, no key-event monitor is needed here
+    /// (plan-binding: simpler lifecycle, by design).
+    func toggleDownloadsPopover() {
+        if let downloadsPopover, downloadsPopover.isShown {
+            downloadsPopover.close()
+            return
+        }
+        // ⇧⌘S with a collapsed sidebar detaches the anchor view from the
+        // window (NSSplitViewController pulls the collapsed item's view
+        // out of the hierarchy); showing a popover against a windowless
+        // view throws an uncaught NSException (final review, C-1 —
+        // empirically reproduced). An earlier revision un-collapsed
+        // synchronously (mirroring focusAddress) and relied on the
+        // animator-proxy setter reattaching the view immediately — the
+        // first live gate run DISPROVED that: the `anchor.window` guard
+        // below refused (graceful, no crash, but no popover either).
+        // Reattachment under the animator is not observable-synchronous
+        // for popover-anchoring purposes, so the un-collapse now runs in
+        // an explicit animation group and the popover presents in its
+        // completion — deterministic, and keeps the reveal animated.
+        // (focusAddress gets away with the synchronous form because a
+        // text field's becomeFirstResponder needs no anchor geometry.)
+        if let item = splitViewController.splitViewItems.first, item.isCollapsed {
+            NSAnimationContext.runAnimationGroup({ _ in
+                item.animator().isCollapsed = false
+            }, completionHandler: { [weak self] in
+                self?.presentDownloadsPopover()
+            })
+            return
+        }
+        presentDownloadsPopover()
+    }
+
+    /// The guarded show-half of `toggleDownloadsPopover()` — split out so
+    /// the collapsed-sidebar path above can call it from the un-collapse
+    /// animation's completion (C-1 gate-run fix).
+    private func presentDownloadsPopover() {
+        guard let anchor = downloadsButtonAnchor, anchor.window != nil else {
+            // Should not happen in practice — SidebarView's AnchorReporter
+            // resolves on the sidebar's first layout pass, well before any
+            // menu/click can reach this method, and the un-collapse above
+            // keeps the anchor in the window — but never crash a menu
+            // action over a not-yet-resolved (or unexpectedly windowless)
+            // anchor.
+            NSLog("NyxWindowCoordinator: downloads button anchor not resolved (or not in a window); cannot show the downloads popover.")
+            return
+        }
+        let popover = ensureDownloadsPopover()
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
+    }
+
+    /// Night-glass chrome (T5 review, Important#1 fix): spec §8 names
+    /// popovers as frosted glass, within-window — `popover.appearance`
+    /// alone only styles AppKit's own arrow/border, never the content
+    /// view's backdrop. Mirrors `LauncherPanelController.ensurePanel()`
+    /// exactly: an `NSVisualEffectView` hosts the `NSHostingController`'s
+    /// view, pinned to all four edges so the effect view's size tracks
+    /// the SwiftUI content's own intrinsic size — `DownloadsPopover`
+    /// paints no opaque background of its own (see that file), so this
+    /// is the popover's only backdrop. `NSPopover` auto-sizes from
+    /// `contentViewController.view`'s Auto-Layout-driven fitting size
+    /// exactly as it did before this change (when that view WAS the
+    /// hosting controller's view directly); the four pin constraints
+    /// below give the wrapping view the identical size, so sizing
+    /// behavior is unchanged — only the backdrop is added.
+    private func ensureDownloadsPopover() -> NSPopover {
+        if let downloadsPopover { return downloadsPopover }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.appearance = NSAppearance(named: .vibrantDark)
+
+        let hostingController = NSHostingController(rootView: DownloadsPopover(
+            manager: downloadManager,
+            onRetry: { [weak self] id in self?.retryDownload(id: id) }))
+
+        let glass = NSVisualEffectView()
+        glass.material = .hudWindow
+        glass.blendingMode = .withinWindow
+        glass.state = .active
+
+        let container = NSViewController()
+        container.view = glass
+        container.addChild(hostingController)
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        glass.addSubview(hostingController.view)
+        NSLayoutConstraint.activate([
+            hostingController.view.leadingAnchor.constraint(equalTo: glass.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: glass.trailingAnchor),
+            hostingController.view.topAnchor.constraint(equalTo: glass.topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: glass.bottomAnchor)
+        ])
+
+        popover.contentViewController = container
+        downloadsPopover = popover
+        return popover
+    }
+
+    /// Retry needs a *host* `WKWebView` to call `resumeDownload`/
+    /// `startDownload` on (spec §5.7/§6) — prefers the selected tab's
+    /// webview, else any tab that still has a live one, else NSLog +
+    /// no-op (never a dialog, never a crash — every tab could be
+    /// hibernated).
+    func retryDownload(id: String) {
+        guard let host = Self.retryHostWebView(
+            selected: manager.selectedTab?.webView,
+            tabs: manager.tabs.map { $0.webView }
+        ) else {
+            NSLog("NyxWindowCoordinator: no live webview available to retry download %@; ignoring.", id)
+            return
+        }
+        downloadManager.retry(id: id, host: host)
+    }
+
+    /// Pure host-selection, extracted per `shouldMoveResponder`'s
+    /// precedent above — `WindowCoordinatorFocusTests` pins this directly
+    /// without constructing a full coordinator. `WKWebView`, unlike
+    /// `WKDownload`, has a public initializer, so real instances can stand
+    /// in for "live" tabs in a test.
+    static func retryHostWebView(selected: WKWebView?, tabs: [WKWebView?]) -> WKWebView? {
+        selected ?? tabs.compactMap { $0 }.first
+    }
+
     // MARK: - Split menu plumbing (Task 10 wires the menu items)
 
     /// Splits the current tab with the first splittable same-space tab
@@ -523,5 +700,43 @@ final class NyxWindowCoordinator {
     func seedHistory(url: String, title: String) {
         try? historyStore.recordVisit(url: url, title: title, at: Date())
     }
+
+    /// Test hook (M6 Task 6, offline UI tests): starts exactly ONE
+    /// download of a small, deterministic, offline `data:` URL via the
+    /// selected tab's webview — `WKWebView.startDownload(using:)`, the
+    /// same entry point spec §5.7 names for a navigation a
+    /// `decidePolicyFor` turned `.download` (T4's funnel), except this
+    /// call site skips navigation/policy entirely and goes straight to a
+    /// download job, so a `data:` URL (which `WKWebView.load(_:)` does
+    /// not support for real navigation) is fine here. No fixture server,
+    /// no network — deterministic across CI/offline runs.
+    ///
+    /// Hands the resulting `WKDownload` straight to
+    /// `downloadManager.adopt`, mirroring exactly what T4's `didBecome`
+    /// handlers do with whatever `WKDownload` WebKit hands THEM — same
+    /// silent-cancel discipline applies: `adopt(_:)` assigns the delegate
+    /// as its first statement.
+    func startTestDownload() {
+        guard let webView = manager.selectedTab?.webView else {
+            NSLog("NyxWindowCoordinator: no selected tab webview; cannot start the test download.")
+            return
+        }
+        guard let url = URL(string: Self.testDownloadDataURL) else { return }
+        webView.startDownload(using: URLRequest(url: url)) { [weak self] download in
+            self?.downloadManager.adopt(download)
+        }
+    }
+
+    /// Arbitrary but fixed bytes ("Nyx test download\n", base64) — only
+    /// its determinism (identical every run) matters, not its content.
+    /// `WKDownload.decideDestination`'s `suggestedFilename` for a
+    /// `data:` URL is undocumented in the SDK headers, so tests built
+    /// against this hook deliberately do NOT assert an exact filename
+    /// (see `NyxUITests`'s design note on the two download tests) —
+    /// they poll the download DIRECTORY for any new file plus the
+    /// popover row appearing, which holds regardless of what name
+    /// WebKit picks.
+    static let testDownloadDataURL =
+        "data:application/octet-stream;base64,Tnl4IHRlc3QgZG93bmxvYWQK"
     #endif
 }

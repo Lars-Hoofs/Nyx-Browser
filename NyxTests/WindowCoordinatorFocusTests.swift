@@ -1,4 +1,5 @@
 import XCTest
+import WebKit
 @testable import Nyx
 
 /// Constructing a full NyxWindowCoordinator needs a session store and
@@ -20,5 +21,36 @@ final class WindowCoordinatorFocusTests: XCTestCase {
         // Deselection (last tab closed, fresh space) → nothing to focus.
         XCTAssertFalse(NyxWindowCoordinator.shouldMoveResponder(to: nil, from: "a"))
         XCTAssertFalse(NyxWindowCoordinator.shouldMoveResponder(to: nil, from: nil))
+    }
+}
+
+/// M6 Task 5: `retryDownload(id:)`'s host-webview selection
+/// (`retryHostWebView`), extracted per the same precedent above so it can
+/// be pinned directly without constructing a full coordinator.
+/// `WKWebView`, unlike `WKDownload`, has a public initializer, so real
+/// instances stand in for "live" tabs here.
+@MainActor
+final class WindowCoordinatorDownloadRetryHostTests: XCTestCase {
+    func testPrefersTheSelectedTabsWebViewWhenPresent() {
+        let selected = WKWebView()
+        let other = WKWebView()
+        let result = NyxWindowCoordinator.retryHostWebView(selected: selected, tabs: [other])
+        XCTAssertTrue(result === selected)
+    }
+
+    func testFallsBackToTheFirstLiveWebViewWhenNoneIsSelected() {
+        let live = WKWebView()
+        let result = NyxWindowCoordinator.retryHostWebView(selected: nil, tabs: [nil, live, nil])
+        XCTAssertTrue(result === live)
+    }
+
+    func testReturnsNilWhenNoTabHasALiveWebView() {
+        let result = NyxWindowCoordinator.retryHostWebView(selected: nil, tabs: [nil, nil])
+        XCTAssertNil(result)
+    }
+
+    func testReturnsNilWhenThereAreNoTabsAtAll() {
+        let result = NyxWindowCoordinator.retryHostWebView(selected: nil, tabs: [])
+        XCTAssertNil(result)
     }
 }

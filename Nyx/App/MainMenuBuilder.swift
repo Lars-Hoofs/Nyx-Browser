@@ -89,6 +89,16 @@ enum MainMenuBuilder {
         toggleSidebar.keyEquivalentModifierMask = [.command, .shift]
         viewMenu.addItem(toggleSidebar)
         viewMenu.addItem(.separator())
+        // M6 Task 5 (spec §5.7): always enabled — validateMenuItem's
+        // `default: return true` already covers this action, no case
+        // needed there.
+        let downloads = NSMenuItem(title: "Downloads",
+                                   action: #selector(AppDelegate.toggleDownloads(_:)),
+                                   keyEquivalent: "l")
+        downloads.keyEquivalentModifierMask = [.command, .option]
+        downloads.target = delegate
+        viewMenu.addItem(downloads)
+        viewMenu.addItem(.separator())
         let nextTab = NSMenuItem(title: "Show Next Tab",
                                  action: #selector(AppDelegate.selectNextTab(_:)),
                                  keyEquivalent: "]")

@@ -9,7 +9,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.appearance = NSAppearance(named: .darkAqua)
 
         do {
-            let coordinator = try NyxWindowCoordinator()
+            // M6 Task 4: resolved BEFORE the coordinator is constructed —
+            // DownloadManager takes its destination directory at init
+            // (same ordering lesson as -nyx-reset-adblock-state below,
+            // one step earlier: construction, not start()).
+            #if DEBUG
+            let downloadDirectoryOverride = downloadDirectoryLaunchArgument()
+            #else
+            let downloadDirectoryOverride: URL? = nil
+            #endif
+            let coordinator = try NyxWindowCoordinator(
+                downloadDirectoryOverride: downloadDirectoryOverride)
             self.coordinator = coordinator
 
             #if DEBUG
@@ -38,6 +48,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if let dumpPath = dumpAdblockStateLaunchArgument() {
                 dumpAdblockState(to: dumpPath, coordinator: coordinator)
+            }
+            // M6 Task 6: after coordinator.start() (a selected tab must
+            // already exist) and independent of the other DEBUG hooks
+            // above — order among them doesn't matter, each acts on its
+            // own concern.
+            if ProcessInfo.processInfo.arguments.contains("-nyx-start-test-download") {
+                coordinator.startTestDownload()
             }
             #endif
         } catch {
@@ -71,8 +88,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func openLauncher(_ sender: Any?) { coordinator?.showLauncher() }
     @objc func toggleBlockAds(_ sender: Any?) { coordinator?.toggleGlobalAdblock() }
     @objc func toggleBlockAdsOnThisSite(_ sender: Any?) { coordinator?.toggleSiteAdblock() }
+    @objc func toggleDownloads(_ sender: Any?) { coordinator?.toggleDownloadsPopover() }
 
     #if DEBUG
+    /// M6 Task 4: `-nyx-download-dir <path>` — routes downloads into an
+    /// in-container directory for UI tests (they must NEVER write into
+    /// the real ~/Downloads; M6 global constraint). ProcessInfo per house
+    /// rules (see testHTMLLaunchArgument below). Best-effort directory
+    /// creation, matching DatabaseLocation's -nyx-db-name handling — a
+    /// failure here fails the reading test via a failed download, never
+    /// the app.
+    private func downloadDirectoryLaunchArgument() -> URL? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let flagIndex = args.firstIndex(of: "-nyx-download-dir"),
+              args.index(after: flagIndex) < args.count else { return nil }
+        let url = URL(fileURLWithPath: args[args.index(after: flagIndex)], isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
     private func testHTMLLaunchArgument() -> String? {
         // ProcessInfo, not UserDefaults: UserDefaults drops values that
         // start with '<' (parsed as plist hex-data; see M1 Task 11).
